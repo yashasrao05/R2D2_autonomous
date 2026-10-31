@@ -16,7 +16,9 @@ class FiducialEngine:
         for dictionary in self.dictionaries:
             detector=cv2.aruco.ArucoDetector(dictionary,cv2.aruco.DetectorParameters()) if hasattr(cv2.aruco,"ArucoDetector") else None
             corners,ids,_ = detector.detectMarkers(gray) if detector else cv2.aruco.detectMarkers(gray,dictionary)
-            if ids is not None: return FiducialDetection(None,int(ids[0][0]),None,corners[0].reshape(4,2),None)
+            marker_ids = np.asarray(ids).reshape(-1) if ids is not None else np.empty(0, dtype=np.int32)
+            if marker_ids.size and corners is not None and len(corners):
+                return FiducialDetection(None, int(marker_ids[0]), None, np.asarray(corners[0]).reshape(4, 2), None)
         value,points,_=self.qr.detectAndDecode(frame)
         if points is not None: return FiducialDetection(None,None,value or None,points.reshape(4,2),None)
         return self._grid(gray)
