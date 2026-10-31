@@ -34,18 +34,18 @@ class FieldLayout:
         east = (b.longitude - a.longitude) * EARTH_M_PER_DEG * math.cos(math.radians(a.latitude))
         return math.hypot(north, east)
 
-    def pixhawk_fence_polygons(self) -> list[list[tuple[float, float]]]:
+    def pixhawk_fence_polygons(self, require_red_exclusion: bool = True) -> list[list[tuple[float, float]]]:
         if self.flight_containment is None or len(self.flight_containment) < 3:
             raise ValueError("whole-flight containment boundary is required before Pixhawk fence upload")
         red = self.polygons.get("red_no_fly_boundary", [])
-        if len(red) < 3:
+        if require_red_exclusion and len(red) < 3:
             raise ValueError("red no-fly exclusion requires at least three vertices")
-        return [
-            [point.pair for point in self.flight_containment],
-            [point.pair for point in red],
-        ]
+        polygons = [[point.pair for point in self.flight_containment]]
+        if len(red) >= 3:
+            polygons.append([point.pair for point in red])
+        return polygons
 
-    def audit(self) -> dict[str, Any]:
+    def audit(self, require_containment: bool = True, require_red_exclusion: bool = True) -> dict[str, Any]:
         required = {
             "home_takeoff_landing", "qr_scan_target", "green_corridor_entry",
             "green_corridor_exit", "blue_corridor_entry", "blue_corridor_exit",
@@ -70,16 +70,16 @@ class FieldLayout:
         blockers = []
         if missing:
             blockers.append("missing normalized roles: " + ", ".join(missing))
-        if len(red) < 3:
+        if require_red_exclusion and len(red) < 3:
             blockers.append("red no-fly boundary has fewer than three vertices")
         if len(delivery) < 3:
             blockers.append("delivery-area boundary has fewer than three vertices")
-        if containment is None:
+        if require_containment and containment is None:
             blockers.append("whole-flight containment boundary was not supplied")
-        elif not all(containment_contains.values()):
+        elif require_containment and not all(containment_contains.values()):
             outside = [name for name, inside in containment_contains.items() if not inside]
             blockers.append("flight containment excludes: " + ", ".join(outside))
-        if red_conflicts:
+        if require_red_exclusion and red_conflicts:
             blockers.append("normalized route points overlap red exclusion: " + ", ".join(red_conflicts))
         return {
             "source": self.source,

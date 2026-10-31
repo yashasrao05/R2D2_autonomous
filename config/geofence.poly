@@ -1,6 +1,5 @@
 # BLOCKED - DO NOT IMPORT THIS FILE INTO MISSION PLANNER.
-# The phone spreadsheet supplies the red exclusion and a delivery-area polygon,
-# but not a whole-flight inclusion boundary containing the Starting Box, QR,
-# and both corridors. runner.py --mode sync-flightplan must continue to fail
-# closed until the event-approved outer boundary is written here (first ring)
-# and the measured red exclusion is written as the second ring.
+# The spreadsheet polygon is the delivery/search area, not a whole-flight
+# inclusion boundary containing the Starting Box, QR, and both corridors.
+# Production downloads the Mission Planner fence read-only. Red avoidance is
+# visual-only and no spreadsheet red-zone coordinates are stored here.

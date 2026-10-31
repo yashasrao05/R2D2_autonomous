@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -79,6 +80,15 @@ def _valid_bundle(directory: str) -> Path:
 
 
 class FlightControllerSyncTests(unittest.TestCase):
+    def test_mission_planner_fence_items_decode_without_red_exclusion(self):
+        vertices = [(13.0, 77.0), (13.001, 77.0), (13.001, 77.001), (13.0, 77.001)]
+        items = [SimpleNamespace(command=5000, param1=0, x=0, y=0)]
+        items.extend(
+            SimpleNamespace(command=5001, param1=4, x=round(lat * 1e7), y=round(lon * 1e7))
+            for lat, lon in vertices
+        )
+        self.assertEqual(MavlinkVehicle.decode_fence_items(items), [vertices])
+
     def test_valid_bundle_writes_and_readbacks_in_dry_run(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = _valid_bundle(directory)
@@ -110,6 +120,22 @@ class FlightControllerSyncTests(unittest.TestCase):
         ])
         self.assertFalse(vehicle.status.armed)
         self.assertEqual(vehicle.status.mode, "LAND")
+
+    def test_fc_managed_dry_hover_uses_read_only_fence(self):
+        vehicle = MavlinkVehicle(dry_run=True, logger=lambda _message: None)
+        vehicle.connect()
+        vehicle.status.lat, vehicle.status.lon = 13.1705809, 77.5331710
+        vehicle._dry_fence_polygons = [[
+            (13.1700, 77.5320), (13.1715, 77.5320),
+            (13.1715, 77.5340), (13.1700, 77.5340),
+        ]]
+        report = run_flight_checkout(
+            vehicle, Tx15SafetyGuard(vehicle), "unused.yaml",
+            level="hover", takeoff_altitude_m=2.0, hover_seconds=3.0,
+            fc_managed=True,
+        )
+        self.assertTrue(report["flightplan_write"]["read_only"])
+        self.assertEqual(report["tasks_completed"], ["arm_takeoff_hover", "land_disarm"])
 
 
 if __name__ == "__main__":

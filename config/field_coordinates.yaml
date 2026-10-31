@@ -33,13 +33,6 @@ points:
     source_label: Danger Zone – Blue End
 
 polygons:
-  red_no_fly_boundary:
-    purpose: exclusion
-    vertices:
-      - {latitude: 13.1706071, longitude: 77.5330503, source_label: Danger Zone – Left Down}
-      - {latitude: 13.1706250, longitude: 77.5329936, source_label: Danger Zone – Left Up}
-      - {latitude: 13.1706293, longitude: 77.5330191, source_label: Danger Zone – Right Up}
-      - {latitude: 13.1706423, longitude: 77.5330399, source_label: Danger Zone – Right Down}
   delivery_area_boundary:
     purpose: delivery_search_area
     vertices:
@@ -64,6 +57,7 @@ derived_mission_points:
       - {latitude: 13.1706900, longitude: 77.5330559, source_label: Derived inset – Bottom Right}
       - {latitude: 13.1706271, longitude: 77.5329718, source_label: Derived polygon centroid}
 
-# Intentionally absent. The supplied "Geo Fence" polygon excludes the home,
-# QR, and transit points, so it is unsafe to use as whole-flight containment.
+# Mission Planner owns the Pixhawk's whole-flight containment fence. The
+# Jetson downloads and verifies that fence over Ethernet and never derives a
+# flight boundary or red exclusion from the phone spreadsheet.
 flight_containment_boundary: null

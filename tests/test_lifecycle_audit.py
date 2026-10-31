@@ -11,6 +11,7 @@ from control.mavlink_interface import MavlinkVehicle
 from control.servo7_actuator import Servo7Actuator
 from core.field_coordinates import load_field_layout
 from safety.lifecycle_audit import run_lifecycle_audit
+from safety.competition_readiness import run_competition_readiness
 from safety.pixhawk_field_sync import sync_field_to_pixhawk
 
 
@@ -35,6 +36,28 @@ class FieldCoordinateTests(unittest.TestCase):
         self.assertEqual((plan.takeoff_scan_qr.lat, plan.takeoff_scan_qr.lon), layout.points["qr_scan_target"].pair)
         self.assertEqual(len(plan.delivery_search_waypoints), 5)
         self.assertTrue(all(13.1704 < waypoint.lat < 13.1708 for waypoint in plan.all_waypoints))
+
+    def test_red_coordinates_are_removed_and_visual_mode_is_selected(self):
+        layout = load_field_layout("config/field_coordinates.yaml")
+        mapping = yaml.safe_load(Path("config/mission_mapping.yaml").read_text(encoding="utf-8"))
+        self.assertNotIn("red_no_fly_boundary", layout.polygons)
+        self.assertEqual(mapping["red_avoidance"]["mode"], "visual")
+        self.assertFalse(mapping["require_red_exclusion"])
+
+    def test_fc_managed_fence_can_gate_the_route_without_local_red_coordinates(self):
+        vehicle = MavlinkVehicle(dry_run=True, logger=lambda _text: None)
+        vehicle.connect()
+        vehicle._dry_fence_polygons = [[
+            (13.1700, 77.5320), (13.1715, 77.5320),
+            (13.1715, 77.5340), (13.1700, 77.5340),
+        ]]
+        report = run_competition_readiness(
+            vehicle, {"transport": "ethernet"}, "config/field_coordinates.yaml",
+            "config/mission.waypoints", "config/mission_mapping.yaml",
+            "config/geofence.poly", margin_m=2.0, sample_seconds=1.0,
+        )
+        self.assertTrue(report["passed"], report["blockers"])
+        self.assertNotIn("geofence_export_alignment", [item["name"] for item in report["checks"]])
 
     def test_non_arming_dry_lifecycle_reports_static_coordinate_blocker(self):
         vehicle = SimpleNamespace(
@@ -117,6 +140,10 @@ class PixhawkFieldSyncTests(unittest.TestCase):
         self.assertIn("--mode service --transport ethernet", unit)
         self.assertNotIn("--mission-profile", unit)
         self.assertIn("WantedBy=multi-user.target", unit)
+        setup = Path("deploy/one_shot_headless_setup.sh").read_text(encoding="utf-8")
+        self.assertIn("--transport ethernet", setup)
+        self.assertNotIn("--transport uart", setup)
+        self.assertNotIn("--display", setup)
 
 
 if __name__ == "__main__":

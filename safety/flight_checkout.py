@@ -55,7 +55,10 @@ def _land_and_wait(vehicle, guard, timeout_s: float = 45.0) -> None:
 
 
 def run_flight_checkout(vehicle, guard, manifest_path: str, level: str = "hover",
-                        takeoff_altitude_m: float = 2.0, hover_seconds: float = 10.0) -> dict:
+                        takeoff_altitude_m: float = 2.0, hover_seconds: float = 10.0,
+                        fc_managed: bool = False, waypoint_path: str = "config/mission.waypoints",
+                        mapping_path: str = "config/mission_mapping.yaml",
+                        fence_margin_m: float = 2.0) -> dict:
     """Explicit live checkout: arm/takeoff/hover, optional one-waypoint hop, then LAND."""
     if level not in {"hover", "hop"}:
         raise ValueError("checkout level must be hover or hop")
@@ -66,13 +69,23 @@ def run_flight_checkout(vehicle, guard, manifest_path: str, level: str = "hover"
     if vehicle.status.armed:
         raise RuntimeError("refusing checkout because Pixhawk already reports ARMED")
 
-    upload_report = sync_flightplan_to_fc(vehicle, manifest_path)
-    manifest = load_upload_manifest(manifest_path)
-    plan = load_mission(manifest["files"]["waypoints"], manifest["files"]["mapping"])
-    layout = load_field_layout(manifest["files"]["coordinates"])
-    geofence = GeofenceEnforcer(
-        vehicle, layout.pixhawk_fence_polygons(), manifest["parameters"]["FENCE_MARGIN"]
-    )
+    if fc_managed:
+        polygons = vehicle.download_fence_polygons()
+        plan = load_mission(waypoint_path, mapping_path)
+        geofence = GeofenceEnforcer(vehicle, polygons, fence_margin_m)
+        upload_report = {
+            "non_arming": True, "read_only": True, "source": "mission_planner",
+            "inclusion_vertices": len(polygons[0]),
+            "exclusion_vertices": sum(len(polygon) for polygon in polygons[1:]),
+        }
+    else:
+        upload_report = sync_flightplan_to_fc(vehicle, manifest_path)
+        manifest = load_upload_manifest(manifest_path)
+        plan = load_mission(manifest["files"]["waypoints"], manifest["files"]["mapping"])
+        layout = load_field_layout(manifest["files"]["coordinates"])
+        geofence = GeofenceEnforcer(
+            vehicle, layout.pixhawk_fence_polygons(), manifest["parameters"]["FENCE_MARGIN"]
+        )
 
     if not vehicle.dry_run:
         vehicle.request_message_intervals((

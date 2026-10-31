@@ -4,14 +4,26 @@ This is the go/no-go procedure for the Jetson Orin Nano, Pixhawk 6X Mini, TX15, 
 
 ## Current configuration status
 
-The software and mock-flight tests are ready, but the checked-in field data is intentionally **NO-GO**. The non-arming competition report currently identifies these blockers:
+Production is headless, Ethernet-only, and uses the polygon fence already stored on the Pixhawk by Mission Planner. The Jetson downloads that fence read-only and rejects profile selection unless every mission leg remains inside it. Spreadsheet red-zone coordinates have been removed; red avoidance is downward-camera-only throughout movement. The spreadsheet `Geo Fence` rows remain the delivery/search boundary and are not uploaded as the whole-flight fence because they exclude the Starting Box, QR point, and most corridor anchors.
 
-- `flight_containment_boundary` is missing from `config/field_coordinates.yaml`.
-- `green_corridor_exit` is inside the supplied red no-fly polygon.
-- `config/mission.waypoints` now uses the team-recorded on-field phone coordinates for all named mission roles. Its five delivery-search samples are provisional points inset from the measured delivery polygon, not separately surveyed targets.
-- `config/geofence.poly` is intentionally non-importable because the spreadsheet does not contain a whole-flight inclusion polygon.
+## One-shot PuTTY setup
 
-Do not guess any of those coordinates. Obtain the event-approved whole-field boundary and resolve the conflicting corridor/red-zone measurement, then export the final Mission Planner waypoint and fence files. The check below verifies the results geometrically.
+Upload the current repository to `/home/r2d2/R2D2_autonomous`. Connect using PuTTY over the Jetson's Wi-Fi, not the Pixhawk Ethernet interface. Keep the aircraft disarmed, remove propellers, set TX15 SC DOWN, and hold RC12 at mechanical neutral. Identify the Pixhawk wired interface with `ip -br link`, then run:
+
+```bash
+cd /home/r2d2/R2D2_autonomous
+bash deploy/one_shot_headless_setup.sh --ethernet-interface YOUR_PIXHAWK_ETHERNET_INTERFACE
+```
+
+To include the secured 65-second winch test in the same run:
+
+```bash
+bash deploy/one_shot_headless_setup.sh \
+  --ethernet-interface YOUR_PIXHAWK_ETHERNET_INTERFACE \
+  --with-winch-test
+```
+
+The script refuses to readdress the interface carrying PuTTY. It disables the obsolete `aerothon-mission.service` if present so two controllers cannot start at boot, updates the venv, runs dependency checks, 46 unit tests, all three mock mission profiles, live Ethernet/FC readiness, a finite non-arming TX15 monitor, and both cameras without a desktop. It installs, enables, and starts the boot service only after all earlier gates pass.
 
 ## One-time Jetson installation
 
@@ -55,39 +67,21 @@ The competition check validates all of the following without arming or moving Se
 - the OS Ethernet route and the Pixhawk's UDP-client parameters;
 - live heartbeat, GPS, RC, EKF-related telemetry, disarmed state, and configured failsafes;
 - fence enable/action/type/maximum altitude and arming checks;
-- normalized containment and red-zone geometry;
+- the Mission Planner polygon fence by read-only MAVLink2 download;
 - each named waypoint against the field coordinate with a 3 m tolerance;
-- every straight leg for all three profiles at 0.5 m sampling against containment and the 2 m red-zone margin;
-- delivery-search count/location and the exported fence polygons;
+- every straight leg for all three profiles at 0.5 m sampling against FC containment and any FC exclusions;
+- delivery-search count/location and visual-only red-zone mode;
 - Servo 7 limits plus the live RC12 neutral.
 
 Required Pixhawk conditions include non-zero `FS_GCS_ENABLE`, `BATT_FS_LOW_ACT`, and `BATT_FS_CRT_ACT`; enabled polygon fencing with a non-report-only action; `FENCE_ALT_MAX >= 12`; `SERVO7_MAX >= 2000`; `SERVO7_MIN <= 1100`; and `SERVO7_TRIM` matching the measured RC12 neutral within 5 microseconds. Segment 2 does not actuate the winch, but the complete aircraft readiness report still checks it so both official profiles are known-good before competition.
 
-## Write parameters, geofence, home, and waypoints to the Pixhawk
+## Pixhawk geofence ownership
 
-The upload bundle is `config/fc_upload_manifest.yaml`. It points to the normalized coordinates, Mission Planner waypoint file, mapping, and fence file and contains the exact fence policy. `config/pixhawk_fence_safety.param` is the matching optional Mission Planner parameter-import file.
-
-Place the disarmed aircraft within 5 m of the configured Starting Box with a flight-quality GPS fix, then run:
-
-```bash
-.venv/bin/python3 runner.py --mode sync-flightplan \
-  --upload-manifest config/fc_upload_manifest.yaml \
-  --transport ethernet
-```
-
-This is non-arming. Before any FC mutation it rejects missing containment, red-zone conflicts, placeholder/misaligned waypoint roles, insufficient search coverage, unsafe sampled legs, or a fence export that differs from the normalized polygons. If the file gate passes, it performs and verifies:
-
-1. `FENCE_TYPE`, `FENCE_ACTION`, `FENCE_ALT_MAX`, and `FENCE_MARGIN` by `PARAM_SET` plus matching `PARAM_VALUE`.
-2. Starting Box HOME by command acknowledgement and `HOME_POSITION` read-back.
-3. Inclusion and red-exclusion polygons by the MAVLink 2 fence mission protocol and item-by-item read-back.
-4. Persistent `FENCE_ENABLE=1` read-back.
-5. Every main AUTO mission waypoint by `MISSION_ITEM_INT` upload, count download, and item-by-item comparison.
-
-The checked-in bundle currently refuses to write because the whole-field boundary and corridor/red-zone conflict listed at the top of this runbook are unresolved. That is an intentional safety result, not a syntax or MAVLink failure. Replace only the event-verified data; rerun until the command prints `"write_verified": true` and exits `0`.
+Mission Planner owns the live Pixhawk polygon fence. The service and `competition-check` download it without writing FC state. Do not upload the four spreadsheet `Geo Fence` points as the global inclusion fence: they do not contain the recorded takeoff/QR/corridor route and would prevent a valid arming check. `sync-flightplan` remains a development utility but is not used by the current boot configuration.
 
 ## Prove arming, hover, and one safe task before the full mission
 
-After `sync-flightplan`, `competition-check`, TX15, and propeller-off checks all pass, use the dedicated live checkout in an approved clear test area. It does not need the cameras or payload.
+After `competition-check`, TX15, cameras, and propeller-off checks all pass, use the dedicated live checkout only under the team's approved flight-test process.
 
 Arm, climb to 2 m, prove a stable 10-second hover, LAND, and confirm disarm:
 
@@ -139,7 +133,7 @@ Expected service states:
 | `CAMERA_CHECK` | Both cameras are opened; live preview begins only after success. |
 | `BLOCKED` | A listed check failed. No profile can be selected; correct it and restart the service. |
 | `IDLE_SELECT_PROFILE` | Disarmed and ready. Keep SC DOWN and lock Segment 1 or Segment 2. |
-| `FIELD_SYNC` | Fence parameters, home, both polygons, and every AUTO mission item are written and read back. |
+| `FIELD_VERIFY` | The Mission Planner fence is downloaded read-only and revalidated; FC state is not changed. |
 | `WAITING_TX15_DOWN` | The mission's independent manual interlock is being rechecked. |
 | `PREFLIGHT_CALIBRATION` | GPS/EKF/battery/failsafes/cameras/payload requirements are being rechecked. |
 | `READY_WAITING_TX15_UP` | Profile is locked and all preparation passed. Clear the field, then SC UP authorizes flight. |

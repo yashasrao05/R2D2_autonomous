@@ -44,7 +44,10 @@ def _route_legs(plan, profile: str):
 
 
 def _audit_mission_geometry(coordinates_path: str | Path, waypoint_path: str | Path,
-                            mapping_path: str | Path, margin_m: float) -> list[dict[str, Any]]:
+                            mapping_path: str | Path, margin_m: float,
+                            fence_polygons: list[list[tuple[float, float]]] | None = None,
+                            require_coordinate_red_exclusion: bool = True,
+                            allow_unvalidated_route: bool = False) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     try:
         layout = load_field_layout(coordinates_path)
@@ -77,7 +80,8 @@ def _audit_mission_geometry(coordinates_path: str | Path, waypoint_path: str | P
 
     search = plan.delivery_search_waypoints
     delivery = [point.pair for point in layout.polygons.get("delivery_area_boundary", [])]
-    red = [point.pair for point in layout.polygons.get("red_no_fly_boundary", [])]
+    red = ([point.pair for point in layout.polygons.get("red_no_fly_boundary", [])]
+           if require_coordinate_red_exclusion else [])
     search_problems = []
     if len(search) < 5:
         search_problems.append(f"only {len(search)} delivery-search waypoints; segment1 requires at least 5")
@@ -89,14 +93,22 @@ def _audit_mission_geometry(coordinates_path: str | Path, waypoint_path: str | P
             search_problems.append(f"waypoint {waypoint.index} is inside the red exclusion")
     checks.append(_check(
         "delivery_search_coverage", not search_problems,
-        f"{len(search)} search waypoints are inside delivery area and outside red" if not search_problems
+        (f"{len(search)} search waypoints are inside delivery area"
+         + (" and outside coordinate red exclusion" if require_coordinate_red_exclusion else
+            "; red avoidance is camera-only")) if not search_problems
         else "; ".join(search_problems),
     ))
 
-    if layout.flight_containment is None:
-        checks.append(_check("profile_route_clearance", False, "cannot validate flight legs without whole-field containment"))
+    polygons = fence_polygons
+    if polygons is None and layout.flight_containment is not None:
+        polygons = layout.pixhawk_fence_polygons(require_coordinate_red_exclusion)
+    if not polygons:
+        checks.append(_check(
+            "profile_route_clearance", None if allow_unvalidated_route else False,
+            "dry-run cannot download the Mission Planner fence" if allow_unvalidated_route
+            else "cannot validate flight legs without whole-field containment",
+        ))
     else:
-        polygons = layout.pixhawk_fence_polygons()
         fence = GeofenceEnforcer(type("AuditVehicle", (), {"status": None, "log": lambda *_a, **_k: None})(), polygons, margin_m)
         route_problems = []
         for profile in ("full", "segment1", "segment2"):
@@ -107,7 +119,7 @@ def _audit_mission_geometry(coordinates_path: str | Path, waypoint_path: str | P
                     route_problems.append(f"{profile} leg {start.index}->{end.index}: {exc}")
         checks.append(_check(
             "profile_route_clearance", not route_problems,
-            "all full/segment1/segment2 GPS legs remain inside containment and outside red margin"
+            "all full/segment1/segment2 GPS legs remain inside the FC fence and outside any FC exclusions"
             if not route_problems else "; ".join(route_problems),
         ))
     return checks
@@ -181,14 +193,42 @@ def run_competition_readiness(vehicle, mavlink_config: dict[str, Any], coordinat
                               fence_path: str | Path, margin_m: float = 2.0,
                               sample_seconds: float = 2.0) -> dict[str, Any]:
     """Non-arming readiness gate for boot service, field setup, and route validity."""
-    lifecycle = run_lifecycle_audit(vehicle, mavlink_config, coordinates_path, sample_seconds)
+    mapping = yaml.safe_load(Path(mapping_path).read_text(encoding="utf-8")) or {}
+    fc_config = mapping.get("flight_controller") or {}
+    fc_managed = str(fc_config.get("field_source", "jetson_files")) == "mission_planner"
+    visual_red = str((mapping.get("red_avoidance") or {}).get("mode", "coordinate")) == "visual"
+    lifecycle = run_lifecycle_audit(
+        vehicle, mavlink_config, coordinates_path, sample_seconds,
+        require_local_containment=not fc_managed,
+        require_coordinate_red_exclusion=not visual_red,
+    )
     checks = list(lifecycle["checks"])
-    file_audit = audit_flightplan_files(coordinates_path, waypoint_path, mapping_path, fence_path, margin_m)
-    # field_coordinates is already included by the lifecycle audit.
-    checks.extend(file_audit["checks"][1:])
+    if fc_managed:
+        downloaded = None
+        try:
+            downloaded = vehicle.download_fence_polygons()
+            checks.append(_check(
+                "fc_managed_fence", True,
+                f"read-only download: {len(downloaded[0])} inclusion vertices, "
+                f"{sum(len(polygon) for polygon in downloaded[1:])} exclusion vertices",
+            ))
+        except Exception as exc:
+            checks.append(_check(
+                "fc_managed_fence", None if vehicle.dry_run else False,
+                f"dry-run has no FC fence snapshot" if vehicle.dry_run else str(exc),
+            ))
+        checks.extend(_audit_mission_geometry(
+            coordinates_path, waypoint_path, mapping_path, margin_m,
+            fence_polygons=downloaded,
+            require_coordinate_red_exclusion=not visual_red,
+            allow_unvalidated_route=vehicle.dry_run and downloaded is None,
+        ))
+    else:
+        file_audit = audit_flightplan_files(coordinates_path, waypoint_path, mapping_path, fence_path, margin_m)
+        # field_coordinates is already included by the lifecycle audit.
+        checks.extend(file_audit["checks"][1:])
     altitude_candidates = [10.0]
     try:
-        mapping = yaml.safe_load(Path(mapping_path).read_text(encoding="utf-8")) or {}
         altitude_candidates.extend(waypoint.alt for waypoint in load_mission(waypoint_path, mapping_path).all_waypoints)
         altitude_candidates.append(float(mapping.get("delivery_altitude_m", 5.0)))
         for settings in (mapping.get("mission_profiles") or {}).values():

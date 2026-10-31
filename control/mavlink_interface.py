@@ -482,6 +482,80 @@ class MavlinkVehicle:
                 raise RuntimeError(f"fence read-back mismatch at item {sequence}")
         self.log(f"Pixhawk fence verified: {len(items)} items")
 
+    @staticmethod
+    def decode_fence_items(items) -> list[list[tuple[float, float]]]:
+        """Decode ordered MAVLink polygon fence items into one inclusion plus exclusions."""
+        polygons: list[tuple[int, list[tuple[float, float]]]] = []
+        index = 0
+        while index < len(items):
+            item = items[index]
+            command = int(item.command)
+            # Mission Planner may prepend one optional fence return point.  It
+            # is metadata, not a polygon boundary, so it must not become a
+            # false unsupported-command failure during the read-only audit.
+            if command == 5000:
+                index += 1
+                continue
+            if command not in (5001, 5002):
+                raise RuntimeError(f"unsupported Mission Planner fence command {command}; use polygon fences")
+            count = int(round(float(item.param1)))
+            if count < 3 or index + count > len(items):
+                raise RuntimeError(f"invalid polygon vertex count {count} at fence item {index}")
+            vertices = []
+            for offset in range(count):
+                vertex = items[index + offset]
+                if int(vertex.command) != command or int(round(float(vertex.param1))) != count:
+                    raise RuntimeError(f"inconsistent polygon at fence item {index + offset}")
+                vertices.append((int(vertex.x) / 1e7, int(vertex.y) / 1e7))
+            polygons.append((command, vertices))
+            index += count
+        inclusions = [vertices for command, vertices in polygons if command == 5001]
+        if len(inclusions) != 1:
+            raise RuntimeError(f"expected exactly one polygon inclusion fence, found {len(inclusions)}")
+        return [inclusions[0], *[vertices for command, vertices in polygons if command == 5002]]
+
+    def download_fence_polygons(self, timeout_s: float = 12.0) -> list[list[tuple[float, float]]]:
+        """Download Mission Planner polygon fences without changing FC state."""
+        if self.dry_run:
+            polygons = getattr(self, "_dry_fence_polygons", None)
+            if polygons is None:
+                raise RuntimeError("dry-run has no FC-managed fence snapshot")
+            return [[tuple(vertex) for vertex in polygon] for polygon in polygons]
+        mission_type = mavutil.mavlink.MAV_MISSION_TYPE_FENCE
+        target = self._target()
+
+        def receive(kind, deadline):
+            while time.monotonic() < deadline:
+                self.send_companion_heartbeat()
+                message = self.connection.recv_match(type=kind, blocking=True, timeout=.5)
+                if message is not None and message.get_srcSystem() == target[0]:
+                    return message
+            return None
+
+        self.connection.mav.mission_request_list_send(*target, mission_type)
+        count_message = receive("MISSION_COUNT", time.monotonic() + timeout_s)
+        if count_message is None:
+            raise TimeoutError("no Mission Planner fence count received from Pixhawk")
+        count = int(count_message.count)
+        if count < 3:
+            raise RuntimeError(f"Pixhawk polygon fence has only {count} stored items")
+        items = []
+        for sequence in range(count):
+            self.connection.mav.mission_request_int_send(*target, sequence, mission_type)
+            item = receive("MISSION_ITEM_INT", time.monotonic() + timeout_s)
+            if item is None or int(item.seq) != sequence:
+                raise TimeoutError(f"no read-back for Pixhawk fence item {sequence}")
+            items.append(item)
+        self.connection.mav.mission_ack_send(
+            *target, mavutil.mavlink.MAV_MISSION_ACCEPTED, mission_type
+        )
+        polygons = self.decode_fence_items(items)
+        self.log(
+            f"Mission Planner fence downloaded: {len(polygons[0])} inclusion vertices, "
+            f"{sum(len(polygon) for polygon in polygons[1:])} exclusion vertices"
+        )
+        return polygons
+
     def upload_mission_items(self, waypoints, timeout_s: float = 15.0) -> None:
         """Upload the main AUTO mission and verify every item by MAVLink2 read-back."""
         items = list(waypoints)

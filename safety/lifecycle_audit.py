@@ -29,6 +29,8 @@ def run_lifecycle_audit(
     mavlink_config: dict[str, Any],
     coordinates_path: str | Path,
     sample_seconds: float = 5.0,
+    require_local_containment: bool = True,
+    require_coordinate_red_exclusion: bool = True,
 ) -> dict[str, Any]:
     """Non-arming Ethernet, telemetry, coordinate, failsafe, and winch-readiness audit."""
     if not 1.0 <= sample_seconds <= 30.0:
@@ -36,7 +38,10 @@ def run_lifecycle_audit(
     checks: list[dict[str, Any]] = []
 
     layout = load_field_layout(coordinates_path)
-    coordinate_audit = layout.audit()
+    coordinate_audit = layout.audit(
+        require_containment=require_local_containment,
+        require_red_exclusion=require_coordinate_red_exclusion,
+    )
     checks.append(_check(
         "field_coordinates",
         bool(coordinate_audit["flight_ready"]),

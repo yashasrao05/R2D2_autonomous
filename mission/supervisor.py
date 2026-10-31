@@ -198,15 +198,33 @@ class CompetitionSupervisor:
             self.oak = None
 
     def _build_and_run(self, profile: str) -> None:
-        self.runtime.transition("FIELD_SYNC", "Writing and reading back FC parameters, home, fences, and mission")
-        sync_report = sync_flightplan_to_fc(self.vehicle, self.args.upload_manifest)
-        manifest = load_upload_manifest(self.args.upload_manifest)
-        layout = load_field_layout(manifest["files"]["coordinates"])
-        geofence = GeofenceEnforcer(
-            self.vehicle, layout.pixhawk_fence_polygons(), manifest["parameters"]["FENCE_MARGIN"]
-        )
+        fc_config = self.config.get("flight_controller") or {}
+        fc_managed = str(fc_config.get("field_source", "jetson_files")) == "mission_planner"
+        if fc_managed:
+            self.runtime.transition("FIELD_VERIFY", "Downloading and verifying the Mission Planner fence without changing FC state")
+            polygons = self.vehicle.download_fence_polygons()
+            geofence = GeofenceEnforcer(
+                self.vehicle, polygons, float(self.config.get("fence_margin_m", 2.0))
+            )
+            sync_report = {
+                "non_arming": True, "read_only": True, "source": "mission_planner",
+                "inclusion_vertices": len(polygons[0]),
+                "exclusion_vertices": sum(len(polygon) for polygon in polygons[1:]),
+            }
+        else:
+            self.runtime.transition("FIELD_SYNC", "Writing and reading back FC parameters, home, fences, and mission")
+            sync_report = sync_flightplan_to_fc(self.vehicle, self.args.upload_manifest)
+            manifest = load_upload_manifest(self.args.upload_manifest)
+            layout = load_field_layout(manifest["files"]["coordinates"])
+            geofence = GeofenceEnforcer(
+                self.vehicle, layout.pixhawk_fence_polygons(), manifest["parameters"]["FENCE_MARGIN"]
+            )
         self.runtime.update(fence_sync=sync_report)
-        self.runtime.log("Pixhawk parameters/home/fence/mission read-back passed", source="supervisor")
+        self.runtime.log(
+            "Mission Planner fence read-back passed" if fc_managed
+            else "Pixhawk parameters/home/fence/mission read-back passed",
+            source="supervisor",
+        )
 
         if self.down is None or self.oak is None:
             raise RuntimeError("mission cameras were not retained after the boot hardware check")
@@ -224,6 +242,8 @@ class CompetitionSupervisor:
             downcam_yaw_deg=float(self.config.get("downcam_yaw_deg", 0.0)),
             require_red_exclusion=bool(self.config.get("require_red_exclusion", True)),
             minimum_search_waypoints=int(self.config.get("minimum_search_waypoints", 5)),
+            visual_red_avoidance=str((self.config.get("red_avoidance") or {}).get("mode", "coordinate")) == "visual",
+            red_check_interval_s=float((self.config.get("red_avoidance") or {}).get("check_interval_s", .25)),
             profile_config=self.profile_config.get(profile, {}),
             status_callback=self._mission_status,
         )

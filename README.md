@@ -2,6 +2,15 @@
 
 Jetson-side Python companion for the SkyScan mission. Production configuration uses MAVLink2 over Ethernet at `udpin:0.0.0.0:14550` and intentionally does not fall back to UART. The expected direct-link addresses are Pixhawk `192.168.168.2/24` and Jetson `192.168.168.10/24`. UART remains available only through the explicit `--transport uart` option.
 
+For the headless competition Jetson, upload the current repository to `/home/r2d2/R2D2_autonomous`, connect with PuTTY over Wi-Fi, keep the aircraft disarmed with propellers removed and SC DOWN, then run one command:
+
+```bash
+cd /home/r2d2/R2D2_autonomous
+bash deploy/one_shot_headless_setup.sh --ethernet-interface YOUR_PIXHAWK_ETHERNET_INTERFACE
+```
+
+Add `--with-winch-test` only when the winch is mechanically secured; it performs the requested PWM 2000 test for 65 seconds. The script configures the dedicated Ethernet interface persistently, updates the venv, runs dependency/unit/SIL/live non-arming checks, tests both cameras without a GUI, installs/enables systemd, and starts the supervisor. It refuses to readdress the interface carrying the active PuTTY connection.
+
 Install with `python3 -m pip install -r requirements.txt`. Put field exports in `config/mission.waypoints` and `config/geofence.poly`, verify the YAML mapping, then validate parsing before flight:
 
 ```bash
@@ -19,13 +28,7 @@ The complete boot, laptop-console, field-check, state-condition, and official-ru
 python3 runner.py --mode competition-check --transport ethernet --lifecycle-seconds 5
 ```
 
-The validated FC upload bundle is [config/fc_upload_manifest.yaml](config/fc_upload_manifest.yaml). With the aircraft disarmed at the Starting Box, write/read-back parameters, home, both polygons, and all mission items using:
-
-```bash
-python3 runner.py --mode sync-flightplan --upload-manifest config/fc_upload_manifest.yaml --transport ethernet
-```
-
-The current checked-in field files intentionally fail that command until the missing whole-field containment and red/corridor conflict are corrected. The waypoint roles now use the team-recorded on-field phone coordinates, with five provisional delivery-search samples inset from the measured delivery polygon. After the upload and competition checks pass, the isolated live hover/hop commands are documented in the runbook.
+Production now treats the polygon fence already stored by Mission Planner as authoritative. The Jetson downloads it read-only over MAVLink2, validates every mission leg against it, and never overwrites it during boot or profile selection. Spreadsheet red-zone coordinates have been removed; downward-camera red detection is active during GPS travel, corridor traversal, delivery, and return. The waypoint roles use the team-recorded phone coordinates, with five provisional delivery-search samples inset from the measured delivery polygon.
 
 To monitor the physical TX15 switch without changing flight mode, use `python3 runner.py --mode test-tx15`. For a propellers-removed fallback test, use `python3 runner.py --mode test-tx15 --tx15-live-fallback`; it never arms or takes off, but it deliberately requests `GUIDED` after SC-up and verifies `ALT_HOLD`/`STABILIZE` after SC-down.
 
@@ -33,7 +36,7 @@ To monitor the physical TX15 switch without changing flight mode, use `python3 r
 
 ## Pixhawk 6X Mini / Jetson Ethernet lifecycle test
 
-The coordinate spreadsheet contains team-recorded on-field phone measurements and is normalized in `config/field_coordinates.yaml`; each clean role name retains its original spreadsheet label. The rows called `Geo Fence` are treated as the delivery search-area boundary because they do not contain the starting box, QR target, or corridor points. No whole-flight containment polygon is invented. The lifecycle audit therefore reports this as a flight blocker until the event's actual overall containment boundary is supplied. It also reports the supplied green-corridor exit overlapping the red exclusion polygon, which must be checked against the physical field before creating a live route.
+The coordinate spreadsheet contains team-recorded on-field phone measurements and is normalized in `config/field_coordinates.yaml`; each clean role name retains its original spreadsheet label. Its red-zone rows are no longer stored or used. The four rows called `Geo Fence` remain the delivery/search boundary because they do not contain the Starting Box, QR target, or corridor anchors. The live Mission Planner fence downloaded from the Pixhawk is the whole-flight containment source.
 
 Give the Jetson Ethernet interface the static address `192.168.168.10/24`, connect the Pixhawk 6X Ethernet link, keep the aircraft disarmed, place the RC12 winch control at its actual neutral position, and run:
 
@@ -41,19 +44,11 @@ Give the Jetson Ethernet interface the static address `192.168.168.10/24`, conne
 python3 runner.py --mode test-lifecycle --transport ethernet --lifecycle-seconds 5
 ```
 
-This is non-arming. It verifies the OS route, confirms that the heartbeat arrived specifically over Ethernet, samples only four MAVLink messages at 2 Hz, checks the Pixhawk network/failsafe parameters, validates the normalized field geometry, reads Servo 7 limits, and captures RC12 neutral without moving the winch. It exits non-zero and lists every blocker instead of stopping after the first one.
+This is non-arming. It verifies the OS route, confirms that the heartbeat arrived specifically over Ethernet, samples only four MAVLink messages at 2 Hz, checks the Pixhawk network/failsafe parameters, downloads the Mission Planner polygon fence read-only, validates every profile leg, reads Servo 7 limits, and captures RC12 neutral without moving the winch. It exits non-zero and lists every blocker instead of stopping after the first one.
 
-### Write takeoff/home and geofence to the Pixhawk
+### Mission Planner fence ownership
 
-With the aircraft physically inside 5 metres of the configured Starting Box, disarmed, and holding a flight-quality GPS fix, run:
-
-```bash
-python3 runner.py --mode sync-pixhawk --transport ethernet
-```
-
-This writes the Starting Box latitude/longitude as Pixhawk home using `MAV_CMD_DO_SET_HOME`, using the live GPS altitude as the required WGS84 altitude. It uploads the whole-flight inclusion polygon and red-zone exclusion with the MAVLink 2 fence mission protocol, requires the Pixhawk acknowledgement, downloads every stored item, and compares the coordinates before enabling the fence. It will not write either item while armed, while the aircraft is away from the Starting Box, or when the containment geometry is invalid.
-
-The supplied spreadsheet still does not contain a usable whole-flight inclusion boundary: its four `Geo Fence` points exclude the Starting Box and the transit route. Add the event-approved overall boundary to `flight_containment_boundary` in `config/field_coordinates.yaml`; do not copy the delivery-area polygon into that field unless the physical takeoff point is also inside it.
+Do not run `sync-pixhawk` or `sync-flightplan` in the current production configuration. Mission Planner owns the Pixhawk fence, and `competition-check` downloads it without mutation. The four spreadsheet `Geo Fence` points cannot safely be uploaded as the global inclusion polygon: geometrically they exclude the recorded Starting Box, QR target, and most corridor anchors, which would cause a fence/pre-arm failure.
 
 ### Start automatically at Jetson boot
 
@@ -64,7 +59,7 @@ cd /home/r2d2/R2D2_autonomous
 bash deploy/install_boot_service.sh
 ```
 
-After `test-lifecycle` and `sync-pixhawk` both pass, start and inspect it:
+After `competition-check` passes, start and inspect it:
 
 ```bash
 sudo systemctl start r2d2-autonomous.service
@@ -72,11 +67,11 @@ systemctl status r2d2-autonomous.service
 journalctl -fu r2d2-autonomous.service
 ```
 
-At subsequent boots, systemd starts a non-arming supervisor after `network-online.target`. It waits for Ethernet, runs readiness checks, validates both cameras, and serves the laptop console. An authenticated operator may lock Segment 1 or Segment 2 only while disarmed with fresh SC-DOWN telemetry. The service then writes and reads back home/fences and calibrates; the existing TX15 SC-UP authorization remains mandatory before arming.
+At subsequent boots, systemd starts a non-arming supervisor after `network-online.target`. It waits for Ethernet, runs readiness checks, downloads and verifies the Mission Planner fence, validates both cameras, and serves the laptop console. An authenticated operator may lock Segment 1 or Segment 2 only while disarmed with fresh SC-DOWN telemetry. The existing TX15 SC-UP authorization remains mandatory before arming.
 
 ## Parent mission and two official child runs
 
-The original complete mission remains the `full` parent in `MissionStateMachine`. Both official runs inherit that parent, so MAVLink, Ethernet-only connection, geofence/red exclusion, TX15 authorization and fallback, watchdog, confirmed launch, camera waiting, throttled telemetry, checkpoints, and fault landing remain shared rather than copied.
+The original complete mission remains the `full` parent in `MissionStateMachine`. Both official runs inherit that parent, so MAVLink, Ethernet-only connection, FC fence enforcement, visual red avoidance, TX15 authorization and fallback, watchdog, confirmed launch, camera waiting, throttled telemetry, checkpoints, and fault landing remain shared rather than copied.
 
 Run the original parent profile:
 
@@ -96,7 +91,7 @@ Official Segment 2 skips marker acquisition and payload configuration entirely, 
 python3 runner.py --mode mission --mission-profile segment2
 ```
 
-Every straight Guided GPS leg is sampled at 0.5 m spacing and rejected before movement if it leaves containment or enters the configured red-zone clearance. The Pixhawk exclusion fence remains the independent flight-controller barrier, and downward-camera red detection still commands an outward escape during delivery/red-bypass operations.
+Every straight Guided GPS leg is sampled at 0.5 m spacing and rejected before movement if it leaves the downloaded FC containment or enters any FC exclusion. Independently, downward-camera red detection checks every movement phase and commands an outward escape without using stored red-zone coordinates.
 
 Check all three profiles without hardware:
 

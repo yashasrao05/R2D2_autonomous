@@ -26,6 +26,7 @@ def parser():
     p.add_argument("--dry-run",action="store_true"); p.add_argument("--resume",action="store_true"); p.add_argument("--reset",action="store_true"); p.add_argument("--save-ref",action="store_true"); p.add_argument("--color",choices=["green","blue"],default="green"); p.add_argument("--no-hud",action="store_true")
     p.add_argument("--tx15-live-fallback", action="store_true", help="Non-arming bench test: GUIDED on SC-up, then verify ALT_HOLD on SC-down.")
     p.add_argument("--tx15-timeout", type=float, default=0, help="TX15 test timeout in seconds; 0 waits indefinitely.")
+    p.add_argument("--tx15-monitor-seconds", type=float, default=0, help="Exit the non-arming TX15 monitor after this many seconds; 0 runs until Ctrl+C.")
     p.add_argument("--servo7-pwm", type=int, default=2000, help="Servo 7 bench-test PWM (default: 2000).")
     p.add_argument("--servo7-seconds", type=float, default=65.0, help="Servo 7 bench-test pulse duration (default: 65 seconds).")
     p.add_argument("--servo7-neutral-pwm", type=int, default=None, help="Optional fixed neutral PWM; default captures the current RC12 input.")
@@ -64,7 +65,12 @@ def main():
         from safety.flight_checkout import run_flight_checkout
         tx=cfg.get("tx15",{}); checkout_guard=Tx15SafetyGuard(vehicle,Tx15Config(channel=int(tx.get("rc_channel",8)),up_pwm=int(tx.get("sc_up_pwm",1700)),down_pwm=int(tx.get("sc_down_pwm",1300)),debounce_count=int(tx.get("debounce_count",3)),rc_timeout_s=float(tx.get("rc_timeout_s",2)),heartbeat_timeout_s=float(tx.get("heartbeat_timeout_s",3)),manual_mode=str(tx.get("manual_fallback_mode","ALT_HOLD")),backup_mode=str(tx.get("backup_fallback_mode","STABILIZE"))))
         print("LIVE FLIGHT CHECK: this mode can arm, take off, hover, and land. Use an approved test area.")
-        report=run_flight_checkout(vehicle,checkout_guard,args.upload_manifest,args.checkout_level,args.takeoff_altitude,args.hover_seconds)
+        fc_managed=str((cfg.get("flight_controller") or {}).get("field_source","jetson_files"))=="mission_planner"
+        report=run_flight_checkout(
+            vehicle,checkout_guard,args.upload_manifest,args.checkout_level,args.takeoff_altitude,args.hover_seconds,
+            fc_managed=fc_managed,waypoint_path=args.wp_file,mapping_path=args.mapping,
+            fence_margin_m=float(cfg.get("fence_margin_m",2.0)),
+        )
         print(json.dumps(report,indent=2)); return
     if args.mode=="competition-check":
         from safety.competition_readiness import run_competition_readiness
@@ -80,7 +86,13 @@ def main():
         from safety.lifecycle_audit import run_lifecycle_audit
         print("Lifecycle audit is NON-ARMING and does not move Servo 7.")
         print("Place the RC12 winch control at its actual neutral position before continuing.")
-        report=run_lifecycle_audit(vehicle,mav_cfg,args.coordinates,args.lifecycle_seconds)
+        fc_managed=str((cfg.get("flight_controller") or {}).get("field_source","jetson_files"))=="mission_planner"
+        visual_red=str((cfg.get("red_avoidance") or {}).get("mode","coordinate"))=="visual"
+        report=run_lifecycle_audit(
+            vehicle,mav_cfg,args.coordinates,args.lifecycle_seconds,
+            require_local_containment=not fc_managed,
+            require_coordinate_red_exclusion=not visual_red,
+        )
         print(json.dumps(report,indent=2))
         if not report["passed"]: raise SystemExit(2)
         return
@@ -106,11 +118,13 @@ def main():
         print(f"SC DOWN verified on channel {guard.config.channel}: {guard.pwm} PWM")
         if not args.tx15_live_fallback:
             print("Monitor-only mode. Move SC UP/DOWN and observe PWM/state; Ctrl+C exits. No flight-mode commands will be sent.")
-            last = None
-            while True:
+            last = None; monitor_deadline = None if args.tx15_monitor_seconds <= 0 else time.monotonic() + args.tx15_monitor_seconds
+            while monitor_deadline is None or time.monotonic() < monitor_deadline:
                 state = guard.poll(.1); current = (state, guard.pwm, guard.rc_fresh(), guard.heartbeat_fresh())
                 if current != last: print(f"SC state={state}, pwm={guard.pwm}, rc_fresh={current[2]}, heartbeat_fresh={current[3]}"); last = current
                 time.sleep(.05)
+            print("TX15 finite monitor complete. No flight-mode, arm, or takeoff command was sent.")
+            return
         guard.wait_for_autonomy_authorization(timeout)
         print("SC UP verified. Requesting GUIDED only; no arm or takeoff command will be sent.")
         if not vehicle.set_mode_confirmed("GUIDED", cancel=lambda: guard.assert_autonomy(None)):
@@ -174,6 +188,8 @@ def main():
             downcam_yaw_deg=float(cfg.get("downcam_yaw_deg",0.0)),
             require_red_exclusion=bool(cfg.get("require_red_exclusion",True)),
             minimum_search_waypoints=int(cfg.get("minimum_search_waypoints",5)),
+            visual_red_avoidance=str((cfg.get("red_avoidance") or {}).get("mode","coordinate"))=="visual",
+            red_check_interval_s=float((cfg.get("red_avoidance") or {}).get("check_interval_s",.25)),
             profile_config=profile_cfg.get(mission_profile,{}),
         )
         if args.reset: machine.checkpoint.clear()

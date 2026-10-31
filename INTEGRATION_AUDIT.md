@@ -12,7 +12,7 @@ Audit basis: current companion code, supplied Pixhawk parameter export, official
 | A one-shot Servo 7 command could leave the winch running after a Jetson crash. | Fixed in production configuration: one FC-side `DO_REPEAT_SERVO` cycle holds the requested output for 65 s, then returns to `SERVO7_TRIM`; the companion also neutralizes explicitly. |
 | Supplied `SERVO7_MAX=1900` clips the requested 2000 us command. | Flight-blocking preflight check added. Set `SERVO7_MAX` to at least 2000 and bench-confirm the physical direction. |
 | Supplied `FS_GCS_ENABLE=0`, `BATT_FS_LOW_ACT=0`, and `BATT_FS_CRT_ACT=0` provide no FC action on companion/battery loss. | Companion now sends a 1 Hz GCS heartbeat and preflight rejects zero actions. Configure appropriate non-zero actions in Mission Planner. |
-| GPS transit can cross the red no-fly zone; the supplied fence has no exclusion polygon. The visual escape vertical sign was also reversed. | Sign fixed and repeated escape added. Production preflight now requires a red-zone exclusion ring; the supplied fence remains blocked until updated. |
+| GPS transit can cross the red no-fly zone; the visual escape vertical sign was also reversed. | Sign fixed. Spreadsheet red coordinates were removed by operator decision; downward-camera red detection now runs during every movement phase, while the Mission Planner containment fence remains an independent FC barrier. |
 | Only two delivery-search waypoints are supplied for the 40 m x 30 m search area. | Production preflight requires at least five. Actual camera-footprint coverage should use more points and must be generated from event-day coordinates. |
 
 ## High findings
@@ -34,10 +34,10 @@ Audit basis: current companion code, supplied Pixhawk parameter export, official
 - Camera yaw is configured as `downcam_yaw_deg: 0.0`. Confirm the Pi camera's image top physically points toward the nose; otherwise enter the measured yaw.
 - The OpenCV/V4L2 fallback can still block inside a driver call. The external GStreamer backend is the intended Jetson path and must be soak-tested on the actual image.
 - OAK-D v3 pipeline construction, passive-stereo behavior, color thresholds, propwash, GNSS multipath, and controller tuning cannot be proven by desktop SIL. Run propellers-off camera/servo/fallback tests and a restrained netted/tethered test where permitted.
-- The current waypoint coordinates appear to be a development route. Replace both waypoint and fence exports with measured event-day geometry before removing the preflight blocks.
+- Mission roles now use the recorded field coordinates. Production downloads and validates the Mission Planner fence read-only instead of overwriting it from the Jetson.
 
 ## Verification performed
 
-- 23 unit/integration tests pass, including coordinate signs, 45-degree transform, banner rejection, reference immutability, Servo 7 clipping, launch/fallback, and neutral recovery.
+- 46 unit/integration tests pass, plus all three parent/child mock-flight profiles.
 - `scripts/mock_mission2_sil.py` passes the full production state machine with generated AprilTag frames: 39 downward frames, 14 OAK frames, a rejected/persisted decoy, both distance-gated corridors, one release, LAND, and disarm.
 - The mock emitted 54 local log messages, below its 200-message anti-flood limit. No MAVLink connection, camera, motor, or Servo 7 output is opened by the harness.

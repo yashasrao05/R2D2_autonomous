@@ -54,13 +54,16 @@ class MissionStateMachine:
                  corridor_distance_m: float = 7.5, delivery_altitude_m: float = 5.0,
                  delivery_altitude_tolerance_m: float = .3, delivery_center_tolerance_m: float = .15,
                  downcam_yaw_deg: float = 0.0, require_red_exclusion: bool = True,
-                 minimum_search_waypoints: int = 5, status_callback=None):
+                 minimum_search_waypoints: int = 5, visual_red_avoidance: bool = False,
+                 red_check_interval_s: float = .25, status_callback=None):
         self.vehicle,self.fence,self.watchdog,self.plan,self.downcam,self.oakd,self.payload,self.checkpoint,self.hud,self.operator_guard=vehicle,fence,watchdog,mission,downcam,oakd,payload,checkpoint,hud,operator_guard
         self.calibration_path=Path(calibration_path); self.engine=FiducialEngine(); self.vault=MarkerVault(); self.phase=Phase.CALIBRATE
         self.corridor_distance_m=corridor_distance_m; self.delivery_altitude_m=delivery_altitude_m
         self.delivery_altitude_tolerance_m=delivery_altitude_tolerance_m; self.delivery_center_tolerance_m=delivery_center_tolerance_m
         self.downcam_yaw_deg=downcam_yaw_deg; self._last_velocity_refresh=0.0
         self.require_red_exclusion=bool(require_red_exclusion); self.minimum_search_waypoints=int(minimum_search_waypoints)
+        self.visual_red_avoidance=bool(visual_red_avoidance)
+        self.red_check_interval_s=max(.1,float(red_check_interval_s)); self._last_red_check=0.0
         self.status_callback=status_callback
     def _notify_status(self, state: str, detail: str | None = None):
         if self.status_callback:
@@ -81,6 +84,15 @@ class MissionStateMachine:
         if now-self._last_velocity_refresh>=.1:
             self.vehicle.resend_last_velocity(); self._last_velocity_refresh=now
     def _read_down(self): return self.downcam.read(on_wait=self._control_heartbeat)
+    def _visual_red_guard(self) -> bool:
+        """Periodically enforce camera-only red avoidance during every movement phase."""
+        if not self.visual_red_avoidance or self.vehicle.dry_run:
+            return False
+        now=time.monotonic()
+        if now-self._last_red_check<self.red_check_interval_s:
+            return False
+        self._last_red_check=now
+        return self._escape_red_zone(self._read_down())
     def _manual_fallback(self, reason: str) -> bool:
         if self.operator_guard:
             return self.operator_guard.yield_to_pilot(reason)
@@ -149,6 +161,8 @@ class MissionStateMachine:
         deadline=time.monotonic()+timeout_s
         while time.monotonic()<deadline:
             self._guard(); self.watchdog.tick(); s=self.vehicle.status
+            if self._visual_red_guard():
+                self.fence.goto_gps(waypoint,target_alt)
             horizontal=math.hypot((s.lat-waypoint.lat)*111_319.49,(s.lon-waypoint.lon)*111_319.49*math.cos(math.radians(waypoint.lat)))
             if horizontal<=1.5 and abs(s.relative_alt_m-target_alt)<=.6:
                 self._checkpoint(self.phase,waypoint); return
@@ -218,6 +232,8 @@ class MissionStateMachine:
         while time.monotonic()<deadline:
             self._control_heartbeat()
             scene=self.oakd.read(color, on_wait=self._control_heartbeat); left,center,right=scene.sectors; vy=0 if scene.banner_offset is None else float(np.clip(scene.banner_offset/320,-.5,.5)); vx=1.0
+            if self._visual_red_guard():
+                continue
             obstacle_range=scene.white_obstacle_m if obstacles else None
             if obstacles and obstacle_range is not None and obstacle_range<2.2: vx=.4; vy=.6 if right>left else -.6
             if scene.depth_valid_fraction>.12 and min(left,right)<.8: vy=.7 if right>left else -.7
@@ -284,6 +300,8 @@ class MissionStateMachine:
         self.fence.goto_gps(current,self.delivery_altitude_m); deadline=time.monotonic()+60; stable=0; last_seen=time.monotonic()
         while time.monotonic()<deadline:
             self._control_heartbeat()
+            if self._visual_red_guard():
+                raise RuntimeError("delivery aborted after visual red-zone escape")
             if detection.corners is None: raise RuntimeError("target lacks corners for visual servoing")
             centre=tuple(detection.corners.mean(axis=0)); forward,right=pixel_to_ground_offset(centre,frame.shape,max(self.vehicle.status.relative_alt_m,.1),camera_yaw_deg=self.downcam_yaw_deg)
             error=float(np.hypot(forward,right)); altitude_error=abs(self.vehicle.status.relative_alt_m-self.delivery_altitude_m)

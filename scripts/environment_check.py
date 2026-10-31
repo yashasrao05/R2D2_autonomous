@@ -77,7 +77,8 @@ def main() -> int:
         from control.mavlink_interface import MavlinkVehicle
         required = {
             "set_mode_confirmed", "arm_confirmed", "takeoff_confirmed",
-            "set_parameter_confirmed", "upload_fence_polygons", "upload_mission_items",
+            "set_parameter_confirmed", "upload_fence_polygons", "download_fence_polygons",
+            "upload_mission_items",
         }
         missing = sorted(name for name in required if not callable(getattr(MavlinkVehicle, name, None)))
         results.append(check("flight_api_names", not missing, "all current APIs present" if not missing else "missing " + ", ".join(missing)))
