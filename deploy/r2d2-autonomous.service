@@ -1,0 +1,27 @@
+[Unit]
+Description=R2D2 AeroTHON autonomous companion (Pixhawk 6X Mini)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=r2d2
+Group=r2d2
+WorkingDirectory=/home/r2d2/R2D2_autonomous
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MAVLINK20=1
+EnvironmentFile=-/etc/default/r2d2-autonomous
+ExecStart=/home/r2d2/R2D2_autonomous/.venv/bin/python3 /home/r2d2/R2D2_autonomous/runner.py --mode service --transport ethernet
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

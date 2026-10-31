@@ -8,8 +8,39 @@ roles:
   land_from_end: 0
 fence_margin_m: 2.0
 oakd_tilt_deg: 45.0
+downcam_yaw_deg: 0.0
+corridor_distance_m: 7.5
+delivery_altitude_m: 5.0
+delivery_altitude_tolerance_m: 0.3
+delivery_center_tolerance_m: 0.15
+require_red_exclusion: true
+minimum_search_waypoints: 5
+mission_profiles:
+  # Parent profile preserves the complete original mission. Select either
+  # official child run with --mission-profile segment1/segment2.
+  default: full
+  full: {}
+  segment1:
+    scan_altitude_m: 5.0
+    bypass_altitude_m: 10.0
+  segment2:
+    launch_altitude_m: 3.0
+    red_bypass_altitude_m: 5.0
+    return_altitude_m: 5.0
+mavlink:
+  # Fail closed on Ethernet for flight and bench tests. Use --transport uart
+  # only when deliberately testing the Jetson serial link.
+  transport: ethernet
+  ethernet_endpoint: udpin:0.0.0.0:14550
+  pixhawk_ip: 192.168.168.2
+  jetson_ip: 192.168.168.10
+  udp_port: 14550
+  uart_device: /dev/ttyTHS1
+  uart_baud: 115200
 payload:
   method: set_servo
+  # FC-side timer returns to SERVO7_TRIM even if the Jetson process dies.
+  autopilot_timed: true
   # Capture the transmitter's offset RC12 neutral before direct Servo 7 control.
   servo_number: 7
   rc_channel: 12

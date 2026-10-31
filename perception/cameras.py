@@ -5,6 +5,7 @@ import select
 import shutil
 import subprocess
 import time
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -42,6 +43,7 @@ class DownwardCamera:
             f"video/x-raw(memory:NVMM),width=1280,height=720,framerate={self.fps}/1,format=NV12 ! "
             f"nvvidconv ! video/x-raw,width={self.width},height={self.height},format=BGRx ! "
             "videoconvert ! video/x-raw,format=BGR ! appsink drop=true sync=false"
+            " max-buffers=1"
         )
 
     def _open_subprocess(self) -> None:
@@ -52,7 +54,8 @@ class DownwardCamera:
             executable, "-q", "nvarguscamerasrc", f"sensor-id={self.sensor_id}", "!",
             f"video/x-raw(memory:NVMM),width=1280,height=720,framerate={self.fps}/1,format=NV12", "!",
             "nvvidconv", "!", f"video/x-raw,width={self.width},height={self.height},format=BGRx", "!",
-            "videoconvert", "!", "video/x-raw,format=BGR", "!", "fdsink",
+            "videoconvert", "!", "video/x-raw,format=BGR", "!",
+            "queue", "leaky=downstream", "max-size-buffers=1", "!", "fdsink", "sync=false",
         ]
         self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=self.frame_bytes * 2)
         if self.process.stdout is None:
@@ -111,7 +114,7 @@ class DownwardCamera:
         if self.backend_name is None:
             self._activate_next_backend()
 
-    def _read_subprocess(self) -> np.ndarray:
+    def _read_subprocess(self, on_wait: Callable[[], None] | None = None) -> np.ndarray:
         if self.process is None or self.process.stdout is None:
             raise RuntimeError("external GStreamer reader is not running")
         if self.process.poll() is not None:
@@ -120,9 +123,11 @@ class DownwardCamera:
         deadline = time.monotonic() + self.read_timeout_s
         fd = self.process.stdout.fileno()
         while len(data) < self.frame_bytes and time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], max(0.0, deadline - time.monotonic()))
+            ready, _, _ = select.select([fd], [], [], min(.05, max(0.0, deadline - time.monotonic())))
             if not ready:
-                break
+                if on_wait:
+                    on_wait()
+                continue
             chunk = os.read(fd, self.frame_bytes - len(data))
             if not chunk:
                 break
@@ -131,11 +136,11 @@ class DownwardCamera:
             raise RuntimeError(f"external GStreamer produced {len(data)}/{self.frame_bytes} frame bytes")
         return np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
 
-    def read(self) -> np.ndarray:
+    def read(self, on_wait: Callable[[], None] | None = None) -> np.ndarray:
         self.open()
         while self.backend_name is not None:
             try:
-                if self.backend_name == "external-gstreamer": return self._read_subprocess()
+                if self.backend_name == "external-gstreamer": return self._read_subprocess(on_wait)
                 if self.cap is None: raise RuntimeError("OpenCV capture is not open")
                 ok, frame = self.cap.read()
                 if not ok or frame is None: raise RuntimeError("camera returned no frame")
@@ -151,8 +156,18 @@ class DownwardCamera:
 
 
 def pixel_to_ground_offset(pixel: tuple[float, float], shape: tuple[int, int] | tuple[int, int, int], altitude_m: float,
-                           hfov_deg: float = 62.2, vfov_deg: float = 48.8) -> tuple[float, float]:
+                           hfov_deg: float = 62.2, vfov_deg: float = 48.8,
+                           camera_yaw_deg: float = 0.0) -> tuple[float, float]:
+    """Return body-forward/body-right ground error for a nadir camera.
+
+    Image right maps to body right.  With a nose-up image and zero camera yaw,
+    image top maps to body forward.  Positive yaw rotates the camera clockwise
+    when viewed from below and is compensated here.
+    """
     h, w = shape[:2]; x, y = pixel
-    east = (x - w / 2) / (w / 2) * altitude_m * np.tan(np.radians(hfov_deg / 2))
-    north = (h / 2 - y) / (h / 2) * altitude_m * np.tan(np.radians(vfov_deg / 2))
-    return north, east
+    right_camera = (x - w / 2) / (w / 2) * altitude_m * np.tan(np.radians(hfov_deg / 2))
+    forward_camera = (h / 2 - y) / (h / 2) * altitude_m * np.tan(np.radians(vfov_deg / 2))
+    yaw = np.radians(camera_yaw_deg)
+    forward_body = forward_camera * np.cos(yaw) - right_camera * np.sin(yaw)
+    right_body = forward_camera * np.sin(yaw) + right_camera * np.cos(yaw)
+    return float(forward_body), float(right_body)

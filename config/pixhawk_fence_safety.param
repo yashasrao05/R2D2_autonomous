@@ -1,0 +1,8 @@
+# Mission Planner parameter import for the same policy used by
+# fc_upload_manifest.yaml. The Python sync command also writes and verifies
+# these values, so importing this file manually is optional.
+FENCE_ENABLE,1
+FENCE_TYPE,5
+FENCE_ACTION,1
+FENCE_ALT_MAX,15
+FENCE_MARGIN,2

@@ -1,0 +1,18 @@
+schema_version: 1
+
+# Paths are relative to this manifest. The upload command refuses to write
+# anything unless these four files describe the same safe field geometry.
+sources:
+  coordinates: field_coordinates.yaml
+  waypoints: mission.waypoints
+  mapping: mission_mapping.yaml
+  fence: geofence.poly
+
+# Copter: maximum-altitude + inclusion/exclusion polygon fences, with RTL/LAND
+# on breach. Every value is written and read back before the mission is used.
+fence_parameters:
+  FENCE_ENABLE: 1
+  FENCE_TYPE: 5
+  FENCE_ACTION: 1
+  FENCE_ALT_MAX: 15
+  FENCE_MARGIN: 2

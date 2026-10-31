@@ -20,6 +20,17 @@ class CorridorScene:
     sectors: tuple[float, float, float]
     banner_offset: float | None
     detections: list["SpatialDetection"]
+    banners: list["BannerDetection"] | None = None
+    depth_valid_fraction: float = 0.0
+    white_obstacle_m: float | None = None
+
+
+@dataclass(frozen=True)
+class BannerDetection:
+    bbox: tuple[int, int, int, int]
+    offset_px: float
+    location: str
+    aspect_ratio: float
 
 
 @dataclass(frozen=True)
@@ -28,6 +39,50 @@ class SpatialDetection:
     confidence: float
     bbox: tuple[float, float, float, float]
     xyz_m: tuple[float, float, float]
+
+
+def camera_to_body_frd(x_c: float, y_c: float, z_c: float,
+                       tilt_deg: float = 45.0) -> tuple[float, float, float]:
+    """Map OAK/OpenCV right-down-forward coordinates into body FRD.
+
+    Camera coordinates are +X right, +Y down, +Z optical-forward.  A positive
+    mount tilt points the optical axis down from body-forward.
+    """
+    angle = np.radians(tilt_deg)
+    cosine, sine = float(np.cos(angle)), float(np.sin(angle))
+    return cosine * z_c - sine * y_c, x_c, sine * z_c + cosine * y_c
+
+
+def detect_corridor_banners(rgb: np.ndarray, color: str,
+                            min_aspect_ratio: float = 3.5) -> list[BannerDetection]:
+    """Find long, saturated entry/exit banners while rejecting blue sky."""
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_BGR2HSV)
+    if color == "green":
+        lower, upper = (45, 110, 45), (88, 255, 255)
+    elif color == "blue":
+        lower, upper = (95, 130, 45), (135, 255, 255)
+    else:
+        raise ValueError("banner color must be green or blue")
+    mask = cv2.inRange(hsv, np.array(lower, np.uint8), np.array(upper, np.uint8))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    height, width = mask.shape
+    minimum_area = max(500.0, width * height * 0.001)
+    results: list[BannerDetection] = []
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect = w / max(h, 1)
+        area = cv2.contourArea(contour)
+        fill = area / max(float(w * h), 1.0)
+        if color == "blue" and y <= 2 and h > height * .15:
+            continue  # sky normally touches the top edge; the arch does not
+        if area < minimum_area or aspect < min_aspect_ratio or fill < 0.45:
+            continue
+        centre_y = y + h / 2
+        location = "top" if centre_y < height * .45 else "bottom" if centre_y > height * .55 else "middle"
+        results.append(BannerDetection((x, y, w, h), x + w / 2 - width / 2, location, aspect))
+    return sorted(results, key=lambda item: item.bbox[2] * item.bbox[3], reverse=True)
 
 
 class OakDCamera:
@@ -107,11 +162,14 @@ class OakDCamera:
             for item in detection_packet.detections:
                 label = self.labels[item.label] if 0 <= item.label < len(self.labels) else str(item.label)
                 coords = item.spatialCoordinates
+                body_xyz = camera_to_body_frd(
+                    coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0, self.tilt_deg
+                )
                 self._detections.append(SpatialDetection(
                     label=label,
                     confidence=float(item.confidence),
                     bbox=(max(0.0, item.xmin), max(0.0, item.ymin), min(1.0, item.xmax), min(1.0, item.ymax)),
-                    xyz_m=(coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0),
+                    xyz_m=body_xyz,
                 ))
 
         # StereoDepth.depth is millimetres. Resize to RGB dimensions so the
@@ -127,16 +185,39 @@ class OakDCamera:
         roi = valid[int(0.20 * height):int(0.80 * height)]
         thirds = np.array_split(roi, 3, axis=1)
         sectors = tuple(float(np.nanpercentile(item, 25)) if np.isfinite(item).any() else 99.0 for item in thirds)
+        depth_valid_fraction = float(np.isfinite(roi).mean()) if roi.size else 0.0
 
-        hsv = cv2.cvtColor(rgb, cv2.COLOR_BGR2HSV)
-        lower, upper = ((45, 80, 50), (85, 255, 255)) if color == "green" else ((100, 100, 50), (135, 255, 255))
-        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-        moments = cv2.moments(mask)
-        banner_offset = None if moments["m00"] < 500 else moments["m10"] / moments["m00"] - width / 2
-        return CorridorScene(rgb, depth, sectors, banner_offset, list(self._detections))
+        banners = detect_corridor_banners(rgb, color)
+        if banners:
+            weights = np.array([item.bbox[2] * item.bbox[3] for item in banners], dtype=float)
+            banner_offset = float(np.average([item.offset_px for item in banners], weights=weights))
+        else:
+            banner_offset = None
 
-    def calibrate_ground_plane(self, count: int = 20) -> dict:
-        frames = [self.read().depth for _ in range(count)]
+        # Matte black walls are deliberately not treated as clear merely
+        # because stereo returned invalid disparity.  For the blue chicane,
+        # range only high-value, low-saturation standee-like regions.
+        white_obstacle_m = None
+        if color == "blue":
+            hsv = cv2.cvtColor(rgb, cv2.COLOR_BGR2HSV)
+            white = cv2.inRange(hsv, np.array((0, 0, 145), np.uint8), np.array((179, 90, 255), np.uint8))
+            candidates, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            ranges = []
+            for contour in candidates:
+                x, y, w, h = cv2.boundingRect(contour)
+                if h < height * .18 or w < width * .04 or cv2.contourArea(contour) < width * height * .004:
+                    continue
+                sample = valid[y:y + h, x:x + w]
+                if np.isfinite(sample).any():
+                    ranges.append(float(np.nanpercentile(sample, 20)))
+            if ranges:
+                white_obstacle_m = min(ranges)
+        return CorridorScene(rgb, depth, sectors, banner_offset, list(self._detections), banners,
+                             depth_valid_fraction, white_obstacle_m)
+
+    def calibrate_ground_plane(self, count: int = 20,
+                               on_wait: Callable[[], None] | None = None) -> dict:
+        frames = [self.read(on_wait=on_wait).depth for _ in range(count)]
         points: list[np.ndarray] = []
         for depth in frames:
             yy, xx = np.indices(depth.shape)
@@ -195,6 +276,10 @@ def annotate_scene(scene: CorridorScene) -> np.ndarray:
         x1, y1, x2, y2 = item.bbox
         start, end = (int(x1 * width), int(y1 * height)), (int(x2 * width), int(y2 * height))
         cv2.rectangle(image, start, end, (0, 255, 0), 2)
-        text = f"{item.label} {item.confidence * 100:.0f}% Z:{item.xyz_m[2]:.2f}m"
+        text = f"{item.label} {item.confidence * 100:.0f}% F:{item.xyz_m[0]:.2f} R:{item.xyz_m[1]:+.2f}m"
         cv2.putText(image, text, (start[0] + 4, max(18, start[1] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    for banner_item in scene.banners or []:
+        x, y, w, h = banner_item.bbox
+        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 255, 0), 2)
+        cv2.putText(image, banner_item.location, (x, max(18, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 0), 1)
     return image
