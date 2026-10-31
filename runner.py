@@ -43,7 +43,7 @@ def main():
             print("Monitor-only mode. Move SC UP/DOWN and observe PWM/state; Ctrl+C exits. No flight-mode commands will be sent.")
             last = None
             while True:
-                vehicle.poll(.1); state = guard.observe(); current = (state, guard.pwm, guard.rc_fresh(), guard.heartbeat_fresh())
+                state = guard.poll(.1); current = (state, guard.pwm, guard.rc_fresh(), guard.heartbeat_fresh())
                 if current != last: print(f"SC state={state}, pwm={guard.pwm}, rc_fresh={current[2]}, heartbeat_fresh={current[3]}"); last = current
                 time.sleep(.05)
         guard.wait_for_autonomy_authorization(timeout)

@@ -26,6 +26,7 @@ class MavlinkVehicle:
         self.logger = logger or print; self.connection = None; self.status = VehicleStatus()
         self._last_velocity = (0.0, 0.0, 0.0)
         self._command_acks: dict[int, int] = {}
+        self._last_stream_request_monotonic = 0.0
 
     def connect(self, timeout: float = 12.0) -> None:
         if self.dry_run:
@@ -99,6 +100,17 @@ class MavlinkVehicle:
             message_ids = (mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS)
         for message_id in message_ids:
             self.command_long(mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, message_id, interval_us)
+        self._last_stream_request_monotonic = time.monotonic()
+
+    def maintain_rc_telemetry(self, stale_after_s: float = 2.0, retry_interval_s: float = 1.0) -> None:
+        """Re-request RC/position streams when Channel 8 telemetry becomes stale."""
+        if self.dry_run:
+            return
+        now = time.monotonic()
+        rc_stale = now - self.status.last_rc_monotonic > stale_after_s
+        if rc_stale and now - self._last_stream_request_monotonic >= retry_interval_s:
+            self.log("RC telemetry stale; re-requesting stream", 4)
+            self.request_message_intervals()
 
     def _wait_for_ack(self, command: int, timeout_s: float, cancel: Callable[[], bool] | None = None) -> bool:
         if self.dry_run: return True

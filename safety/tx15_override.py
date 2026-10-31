@@ -38,6 +38,12 @@ class Tx15SafetyGuard:
         if self._count >= self.config.debounce_count: self.state = instant
         return self.state
 
+    def poll(self, duration_s: float = 0.05) -> str:
+        """Match autonomous_test3.py: read telemetry, re-request stale RC, debounce SC."""
+        self.vehicle.poll(duration_s)
+        self.vehicle.maintain_rc_telemetry(self.config.rc_timeout_s)
+        return self.observe()
+
     @property
     def pwm(self) -> int | None: return (self.vehicle.status.rc_channels or {}).get(self.config.channel)
     def rc_fresh(self) -> bool: return time.monotonic() - self.vehicle.status.last_rc_monotonic <= self.config.rc_timeout_s
@@ -50,7 +56,7 @@ class Tx15SafetyGuard:
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         self.vehicle.log(f"TX15 CH{self.config.channel}: set SC DOWN to arm mission")
         while not self.is_down():
-            self.vehicle.poll(.05); self.observe()
+            self.poll(.05)
             if deadline and time.monotonic() >= deadline: raise TimeoutError("TX15 SC switch did not reach manual/DOWN")
             time.sleep(.05)
         self.vehicle.log(f"TX15 CH{self.config.channel} manual interlock verified ({self.pwm})")
@@ -59,7 +65,7 @@ class Tx15SafetyGuard:
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         self.vehicle.log(f"TX15 CH{self.config.channel}: flip SC UP to start autonomous mission")
         while not self.is_up():
-            self.vehicle.poll(.05); self.observe()
+            self.poll(.05)
             if deadline and time.monotonic() >= deadline: raise TimeoutError("TX15 SC switch did not authorize autonomy")
             time.sleep(.05)
 
@@ -69,7 +75,7 @@ class Tx15SafetyGuard:
             self.vehicle.set_mode_confirmed(self.config.backup_mode, 1.5)
 
     def assert_autonomy(self, expected_modes: tuple[str, ...] | None = ("GUIDED",)) -> None:
-        self.vehicle.poll(.01); self.observe()
+        self.poll(.01)
         if not self.heartbeat_fresh(): self.yield_to_pilot("Pixhawk heartbeat stale"); raise PilotOverride("Pixhawk heartbeat stale")
         if self.manual_requested(): self.yield_to_pilot(f"TX15 SC manual/stale ({self.pwm})"); raise PilotOverride("TX15 manual override")
         if expected_modes is not None and self.vehicle.status.mode not in expected_modes:
