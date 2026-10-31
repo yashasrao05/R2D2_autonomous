@@ -54,7 +54,9 @@ def main():
         try:
             while True:
                 guard.assert_autonomy(("GUIDED",)); time.sleep(.05)
-        except PilotOverride:
+        except PilotOverride as exc:
+            if "TX15 manual override" not in str(exc):
+                raise RuntimeError(f"test stopped before SC-down fallback: {exc}; Pixhawk mode is {vehicle.status.mode}") from exc
             if vehicle.status.mode not in {guard.config.manual_mode, guard.config.backup_mode}:
                 raise RuntimeError(f"fallback did not confirm; current mode is {vehicle.status.mode}")
             print(f"TX15 fallback verified: Pixhawk is in {vehicle.status.mode}. No arm/takeoff command was sent.")

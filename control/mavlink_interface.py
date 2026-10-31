@@ -14,7 +14,7 @@ class VehicleStatus:
     lat: float = 0.0; lon: float = 0.0; relative_alt_m: float = 0.0
     battery_v: float = 0.0; satellites: int = 0; hdop: float = 99.0
     ekf_ok: bool = False; armed: bool = False; mode: str = "UNKNOWN"; heading_deg: float = 0.0
-    rc_channels: dict[int, int] | None = None; rc_sequence: int = 0
+    rc_channels: dict[int, int] | None = None; rc_sequence: int = 0; custom_mode: int | None = None
     last_rc_monotonic: float = 0.0; last_heartbeat_monotonic: float = 0.0
 
 
@@ -29,7 +29,7 @@ class MavlinkVehicle:
 
     def connect(self, timeout: float = 12.0) -> None:
         if self.dry_run:
-            self.status = VehicleStatus(12.9716, 77.5946, 0, 22.2, 12, 0.8, True, False, "GUIDED", 0.0, {8: 1000}, 1, time.monotonic(), time.monotonic())
+            self.status = VehicleStatus(12.9716, 77.5946, 0, 22.2, 12, 0.8, True, False, "GUIDED", 0.0, {8: 1000}, 1, time.monotonic(), time.monotonic(), 4)
             self.log("DRY-RUN MAVLink connection ready"); return
         if mavutil is None: raise RuntimeError("pymavlink is required; install requirements.txt")
         errors = []
@@ -49,6 +49,11 @@ class MavlinkVehicle:
             message = self.connection.recv_match(blocking=False)
             if message is None: time.sleep(.005); continue
             kind = message.get_type()
+            # The companion can receive GCS/peripheral messages on UDP. Only
+            # the selected Pixhawk's autopilot heartbeat is allowed to change
+            # our authoritative flight-mode state (as in autonomous_test3.py).
+            if message.get_srcSystem() != self._target()[0]:
+                continue
             if kind == "GLOBAL_POSITION_INT":
                 self.status.lat, self.status.lon, self.status.relative_alt_m = message.lat / 1e7, message.lon / 1e7, message.relative_alt / 1000
                 self.status.heading_deg = message.hdg / 100 if message.hdg != 65535 else self.status.heading_deg
@@ -56,7 +61,14 @@ class MavlinkVehicle:
             elif kind == "GPS_RAW_INT": self.status.satellites, self.status.hdop = message.satellites_visible, message.eph / 100
             elif kind == "EKF_STATUS_REPORT": self.status.ekf_ok = not bool(message.flags & 0b111000)
             elif kind == "HEARTBEAT":
-                self.status.armed = bool(message.base_mode & 128); self.status.mode = mavutil.mode_string_v10(message)
+                autopilot_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
+                if message.get_srcComponent() != autopilot_component or message.autopilot == mavutil.mavlink.MAV_AUTOPILOT_INVALID:
+                    continue
+                modes = self.connection.mode_mapping() or {}
+                inverse_modes = {value: name for name, value in modes.items()}
+                self.status.armed = bool(message.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                self.status.custom_mode = message.custom_mode
+                self.status.mode = inverse_modes.get(message.custom_mode, str(message.custom_mode))
                 self.status.last_heartbeat_monotonic = time.monotonic()
             elif kind == "RC_CHANNELS":
                 self.status.rc_channels = {index: getattr(message, f"chan{index}_raw") for index in range(1, 19) if getattr(message, f"chan{index}_raw", 0) not in (0, 65535)}
