@@ -1,5 +1,5 @@
 from __future__ import annotations
-import threading, cv2, numpy as np
+import threading, time, cv2, numpy as np
 from flask import Flask, Response
 class WifiHudStreamer:
     def __init__(self, port: int=5000): self.port=port; self.app=Flask(__name__); self.lock=threading.Lock(); self.left=None; self.right=None; self.app.add_url_rule('/stream','stream',self.stream)
@@ -13,6 +13,8 @@ class WifiHudStreamer:
         return cv2.imencode('.jpg',np.hstack([left,right]),[cv2.IMWRITE_JPEG_QUALITY,80])[1].tobytes()
     def stream(self):
         def generate():
-            while True: yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'+self._frame()+b'\r\n'
+            while True:
+                started=time.monotonic(); yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'+self._frame()+b'\r\n'
+                time.sleep(max(0.0, .1-(time.monotonic()-started)))
         return Response(generate(),mimetype='multipart/x-mixed-replace; boundary=frame')
     def start(self) -> None: threading.Thread(target=lambda:self.app.run(host='0.0.0.0',port=self.port,threaded=True,use_reloader=False),daemon=True).start()

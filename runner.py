@@ -18,6 +18,9 @@ def parser():
     p.add_argument("--dry-run",action="store_true"); p.add_argument("--resume",action="store_true"); p.add_argument("--reset",action="store_true"); p.add_argument("--save-ref",action="store_true"); p.add_argument("--color",choices=["green","blue"],default="green"); p.add_argument("--no-hud",action="store_true")
     p.add_argument("--tx15-live-fallback", action="store_true", help="Non-arming bench test: GUIDED on SC-up, then verify ALT_HOLD on SC-down.")
     p.add_argument("--tx15-timeout", type=float, default=0, help="TX15 test timeout in seconds; 0 waits indefinitely.")
+    p.add_argument("--servo7-pwm", type=int, default=2000, help="Servo 7 bench-test PWM (default: 2000).")
+    p.add_argument("--servo7-seconds", type=float, default=65.0, help="Servo 7 bench-test pulse duration (default: 65 seconds).")
+    p.add_argument("--servo7-neutral-pwm", type=int, default=1500, help="Neutral PWM for direct set_servo mode; RC override mode releases back to the transmitter.")
     return p
 def main():
     args=parser().parse_args(); cfg=yaml.safe_load(Path(args.mapping).read_text()) or {}; payload_cfg=cfg.get("payload",{})
@@ -62,7 +65,9 @@ def main():
             print(f"TX15 fallback verified: Pixhawk is in {vehicle.status.mode}. No arm/takeoff command was sent.")
         return
     if args.mode=="test-servo7":
-        Servo7Actuator(vehicle,**payload_cfg).release_cycle(); return
+        print("SERVO7 test is NON-ARMING. It overrides RC12, then releases back to transmitter neutral.")
+        print("Remove propellers and secure the winch before continuing.")
+        Servo7Actuator(vehicle,**payload_cfg).test_drop(args.servo7_pwm,args.servo7_seconds,args.servo7_neutral_pwm); return
     if args.mode in {"test-aruco","test-redzone","test-corridor","calibrate","mission"}:
         from perception.cameras import DownwardCamera
         from perception.oakd_corridor_avoidance import OakDCamera

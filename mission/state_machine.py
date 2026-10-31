@@ -11,6 +11,7 @@ from perception.aruco_fiducial_engine import FiducialEngine
 from perception.cameras import pixel_to_ground_offset
 from perception.red_zone_detector import detect_red_zone
 from perception.oakd_corridor_avoidance import annotate_scene
+from safety.tx15_override import PilotOverride
 
 class Phase(str,Enum): CALIBRATE="CALIBRATE"; SCAN_REFERENCE="SCAN_REFERENCE"; GREEN="GREEN"; SEARCH="SEARCH"; RELEASE="RELEASE"; BLUE="BLUE"; LAND="LAND"; COMPLETE="COMPLETE"
 
@@ -31,6 +32,68 @@ class MissionStateMachine:
     def _checkpoint(self, phase: Phase, wp=None): self.phase=phase; self.checkpoint.save(phase.value,None if wp is None else wp.index,phase_altitude=self.vehicle.status.relative_alt_m); self.vehicle.log(f"Checkpoint {phase.value}")
     def _guard(self, modes: tuple[str, ...] | None = ("GUIDED",)):
         if self.operator_guard: self.operator_guard.assert_autonomy(modes)
+    def _manual_fallback(self, reason: str) -> bool:
+        if self.operator_guard:
+            return self.operator_guard.yield_to_pilot(reason)
+        if self.vehicle.status.mode == "ALT_HOLD":
+            return True
+        return self.vehicle.set_mode_confirmed("ALT_HOLD", 1.5) or self.vehicle.set_mode_confirmed("STABILIZE", 1.5)
+    def _disarm_on_ground(self) -> bool:
+        if not self.vehicle.status.armed:
+            return True
+        if self.vehicle.status.relative_alt_m >= .3:
+            return False
+        return self.vehicle.arm_confirmed(False, timeout_s=3.0)
+    def _abort_launch(self, reason: str) -> None:
+        self.vehicle.log(f"Launch aborted: {reason}", 2)
+        if not self._disarm_on_ground() and self.vehicle.status.relative_alt_m < .3:
+            self.vehicle.log("Ground disarm was not confirmed", 2)
+        self._manual_fallback(reason)
+    def _launch(self, altitude_m: float, climb_timeout_s: float = 15.0) -> None:
+        """Run the tested GUIDED -> arm -> spool -> takeoff sequence."""
+        self.vehicle.poll(.1); self._guard(None)
+        if self.vehicle.status.armed and self.vehicle.status.relative_alt_m > .5:
+            self._manual_fallback(f"launch requested while airborne at {self.vehicle.status.relative_alt_m:.1f}m")
+            raise RuntimeError("refusing a ground launch while vehicle is already airborne")
+
+        authorize = (lambda: self._guard(None)) if self.operator_guard else None
+        stay_guided = (lambda: self._guard(("GUIDED",))) if self.operator_guard else None
+        try:
+            if not self.vehicle.set_mode_confirmed("GUIDED", cancel=authorize):
+                self._abort_launch("GUIDED mode rejected or authorization removed")
+                raise RuntimeError("GUIDED mode rejected or cancelled")
+            self._guard(("GUIDED",))
+            if not self.vehicle.arm_confirmed(True, cancel=stay_guided):
+                self._abort_launch("arming rejected or authorization removed")
+                raise RuntimeError("arming rejected or cancelled")
+
+            spool_deadline = time.monotonic() + .5
+            while time.monotonic() < spool_deadline:
+                self._guard(("GUIDED",)); self.watchdog.tick(); time.sleep(.05)
+
+            if not self.vehicle.takeoff_confirmed(altitude_m, cancel=stay_guided):
+                self._abort_launch("takeoff command rejected or authorization removed")
+                raise RuntimeError("takeoff rejected or cancelled")
+
+            deadline = time.monotonic() + climb_timeout_s
+            while time.monotonic() < deadline:
+                self._guard(("GUIDED",)); self.watchdog.tick()
+                if self.vehicle.status.relative_alt_m >= altitude_m - .2:
+                    return
+                self.vehicle.log(
+                    f"Climb {self.vehicle.status.relative_alt_m:.1f}/{altitude_m:.1f}m",
+                    throttle_s=2.0, key="launch-climb",
+                )
+                time.sleep(.05)
+            self.vehicle.log("Climb timeout; requesting LAND", 2)
+            self.vehicle.set_mode_confirmed("LAND", 3.0)
+            raise TimeoutError(f"did not climb to {altitude_m:.1f}m within {climb_timeout_s:.0f}s")
+        except PilotOverride:
+            # assert_autonomy already commanded the tested fallback. If the
+            # vehicle only just armed, also stop the motors while still grounded.
+            if self.vehicle.status.relative_alt_m < .3:
+                self._disarm_on_ground()
+            raise
     def _goto(self, waypoint, altitude=None, timeout_s=90.):
         self._guard()
         target_alt=waypoint.alt if altitude is None else altitude; self.fence.goto_gps(waypoint,target_alt)
@@ -58,22 +121,19 @@ class MissionStateMachine:
         matrices=[]; chosen=None
         deadline=time.monotonic()+60
         while len(matrices)<frames and time.monotonic()<deadline:
-            frame=self.downcam.read(); d=self.engine.detect(frame)
+            self._guard(); self.watchdog.tick()
+            frame=self.downcam.read(); self._guard(); d=self.engine.detect(frame)
             if d and d.matrix is not None: matrices.append(d.matrix); chosen=d
         if not matrices: raise RuntimeError("no 6x6 reference marker observed")
         chosen.matrix=self.engine.majority(matrices); self.vault.set_reference(chosen,self.vehicle.status.lat,self.vehicle.status.lon); self.vehicle.log("Reference fiducial stored")
     def phase1(self):
-        self._guard(None)
-        cancel = (lambda: self._guard(None)) if self.operator_guard else None
-        if not self.vehicle.set_mode_confirmed("GUIDED", cancel=cancel): raise RuntimeError("GUIDED mode rejected or cancelled")
-        if not self.vehicle.arm_confirmed(True, cancel=cancel): raise RuntimeError("arming rejected or cancelled")
-        if not self.vehicle.takeoff_confirmed(5.0, cancel=cancel): raise RuntimeError("takeoff rejected or cancelled")
+        self._launch(5.0)
         self._goto(self.plan.takeoff_scan_qr,5.0); self._collect_reference(); self._checkpoint(Phase.GREEN,self.plan.takeoff_scan_qr)
     def _corridor(self,color:str,start,end,obstacles:bool=False):
         self._goto(start,1.5); deadline=time.monotonic()+45
         while time.monotonic()<deadline:
             self._guard()
-            scene=self.oakd.read(color); left,center,right=scene.sectors; vy=0 if scene.banner_offset is None else float(np.clip(scene.banner_offset/320,-.5,.5)); vx=1.0
+            scene=self.oakd.read(color, on_wait=lambda: self._guard()); left,center,right=scene.sectors; vy=0 if scene.banner_offset is None else float(np.clip(scene.banner_offset/320,-.5,.5)); vx=1.0
             if obstacles and center<2.2: vx=.4; vy=.6 if right>left else -.6
             if min(left,right)<.8: vy=.7 if right>left else -.7
             self.fence.send_body_velocity(vx,vy,0); self.watchdog.tick()
@@ -93,7 +153,7 @@ class MissionStateMachine:
     def phase3(self):
         for wp in self.plan.delivery_search_waypoints:
             self._guard()
-            self._goto(wp,10.0); frame=self.downcam.read(); red=detect_red_zone(frame)
+            self._goto(wp,10.0); frame=self.downcam.read(); self._guard(); red=detect_red_zone(frame)
             if red: self.fence.send_body_velocity(red.vector[1],red.vector[0],0); self.vehicle.log("Red zone avoidance")
             d=self.engine.detect(frame)
             if d:
@@ -109,7 +169,7 @@ class MissionStateMachine:
             centre=tuple(detection.corners.mean(axis=0)); north,east=pixel_to_ground_offset(centre,frame.shape,self.vehicle.status.relative_alt_m)
             if np.hypot(north,east)<.25: break
             self.fence.send_body_velocity(float(np.clip(north,-.7,.7)),float(np.clip(east,-.7,.7)),0)
-            frame=self.downcam.read(); detection=self.engine.detect(frame)
+            frame=self.downcam.read(); self._guard(); detection=self.engine.detect(frame)
             if detection is None: raise RuntimeError("lost target during visual servoing")
         else: raise RuntimeError("visual servoing did not converge within 45 seconds")
         self.fence.send_body_velocity(0,0,0)
@@ -120,22 +180,57 @@ class MissionStateMachine:
         self._goto(self.plan.land_podium,3)
         cancel=(lambda: self._guard(("GUIDED","LAND"))) if self.operator_guard else None
         if not self.vehicle.set_mode_confirmed("LAND", cancel=cancel): raise RuntimeError("LAND mode rejected or cancelled")
-        self._checkpoint(Phase.COMPLETE,self.plan.land_podium)
+        if self.vehicle.dry_run:
+            self.vehicle.status.armed = False
+        deadline=time.monotonic()+45
+        while time.monotonic()<deadline:
+            self._guard(("LAND",)); self.watchdog.tick()
+            if not self.vehicle.status.armed:
+                self._checkpoint(Phase.COMPLETE,self.plan.land_podium); self.vehicle.log("Mission complete: touchdown/disarm"); return
+            self.vehicle.log(
+                f"Landing: {self.vehicle.status.relative_alt_m:.1f}m",
+                throttle_s=2.0, key="landing-progress",
+            )
+            time.sleep(.1)
+        self.vehicle.log("Landing timeout; Pixhawk remains in LAND", 2)
+        raise TimeoutError("vehicle did not disarm within 45 seconds of LAND")
+    def _failsafe_land(self, reason: str) -> None:
+        if not self.vehicle.status.armed:
+            return
+        self.vehicle.log(f"Mission fault: {reason}; requesting LAND", 2)
+        try:
+            self.vehicle.send_body_velocity(0,0,0)
+        except Exception as exc:
+            self.vehicle.log(f"Could not stop velocity setpoint: {exc}", 2)
+        if self.vehicle.status.mode != "LAND" and not self.vehicle.set_mode_confirmed("LAND", 3.0):
+            self.vehicle.log("Fault LAND mode was not confirmed", 2)
+    def _run_active_mission(self) -> None:
+        try:
+            self.phase1(); self.phase2(); target,frame=self.phase3(); self.phase4(target,frame); self.phase5(); self.phase6()
+        except PilotOverride:
+            raise
+        except BaseException as exc:
+            self._failsafe_land(type(exc).__name__)
+            raise
     def run(self,resume=False):
         if resume: return self.resume()
         if self.operator_guard: self.operator_guard.require_initial_manual()
         self.preflight_calibrate()
         if self.operator_guard: self.operator_guard.wait_for_autonomy_authorization()
-        self.phase1(); self.phase2(); target,frame=self.phase3(); self.phase4(target,frame); self.phase5(); self.phase6()
+        self._run_active_mission()
     def resume(self):
         saved=self.checkpoint.load(); phase=Phase(saved["state"]); idx=saved.get("last_cleared_waypoint")
         if phase in (Phase.GREEN,Phase.BLUE): idx=self.plan.green_corridor_start.index if phase==Phase.GREEN else self.plan.blue_corridor_start.index
         if self.operator_guard: self.operator_guard.require_initial_manual(); self.operator_guard.wait_for_autonomy_authorization()
-        cancel = (lambda: self._guard(None)) if self.operator_guard else None
-        if not self.vehicle.set_mode_confirmed("GUIDED", cancel=cancel) or not self.vehicle.arm_confirmed(True, cancel=cancel) or not self.vehicle.takeoff_confirmed(10, cancel=cancel):
-            raise RuntimeError("hot-resume launch rejected or cancelled")
-        if idx is not None: self._goto(self.plan.all_waypoints[idx],10)
-        if phase==Phase.GREEN: self.phase2(); phase=Phase.SEARCH
-        if phase==Phase.SEARCH: target,frame=self.phase3(); self.phase4(target,frame); phase=Phase.BLUE
-        if phase==Phase.BLUE: self.phase5(); phase=Phase.LAND
-        if phase==Phase.LAND: self.phase6()
+        try:
+            self._launch(10.0)
+            if idx is not None: self._goto(self.plan.all_waypoints[idx],10)
+            if phase==Phase.GREEN: self.phase2(); phase=Phase.SEARCH
+            if phase==Phase.SEARCH: target,frame=self.phase3(); self.phase4(target,frame); phase=Phase.BLUE
+            if phase==Phase.BLUE: self.phase5(); phase=Phase.LAND
+            if phase==Phase.LAND: self.phase6()
+        except PilotOverride:
+            raise
+        except BaseException as exc:
+            self._failsafe_land(type(exc).__name__)
+            raise

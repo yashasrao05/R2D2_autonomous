@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -76,12 +78,25 @@ class OakDCamera:
         self.detection_q = spatial_nn.out.createOutputQueue(maxSize=2, blocking=False)
         self.pipeline.start()
 
-    def read(self, color: str = "green", floor_height_m: float = 0.25) -> CorridorScene:
+    @staticmethod
+    def _wait_for_packet(queue, deadline: float, name: str, on_wait: Callable[[], None] | None):
+        while time.monotonic() < deadline:
+            packet = queue.tryGet()
+            if packet is not None:
+                return packet
+            if on_wait:
+                on_wait()
+            time.sleep(.02)
+        raise TimeoutError(f"OAK-D {name} frame timed out")
+
+    def read(self, color: str = "green", floor_height_m: float = 0.25,
+             timeout_s: float = 2.0, on_wait: Callable[[], None] | None = None) -> CorridorScene:
         if self.pipeline is None:
             self.open()
 
-        rgb_packet = self.rgb_q.get()
-        depth_packet = self.depth_q.get()
+        deadline = time.monotonic() + timeout_s
+        rgb_packet = self._wait_for_packet(self.rgb_q, deadline, "RGB", on_wait)
+        depth_packet = self._wait_for_packet(self.depth_q, deadline, "depth", on_wait)
         rgb = rgb_packet.getCvFrame()
         depth_mm = depth_packet.getFrame().astype(np.float32)
 

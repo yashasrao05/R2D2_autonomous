@@ -27,10 +27,18 @@ class MavlinkVehicle:
         self._last_velocity = (0.0, 0.0, 0.0)
         self._command_acks: dict[int, int] = {}
         self._last_stream_request_monotonic = 0.0
+        self._last_log_monotonic: dict[str, float] = {}
 
     def connect(self, timeout: float = 12.0) -> None:
         if self.dry_run:
-            self.status = VehicleStatus(12.9716, 77.5946, 0, 22.2, 12, 0.8, True, False, "GUIDED", 0.0, {8: 1000}, 1, time.monotonic(), time.monotonic(), 4)
+            now = time.monotonic()
+            self.status = VehicleStatus(
+                lat=12.9716, lon=77.5946, relative_alt_m=0.0,
+                battery_v=22.2, satellites=12, hdop=0.8, ekf_ok=True,
+                armed=False, mode="GUIDED", heading_deg=0.0,
+                rc_channels={8: 1000}, rc_sequence=1, custom_mode=4,
+                last_rc_monotonic=now, last_heartbeat_monotonic=now,
+            )
             self.log("DRY-RUN MAVLink connection ready"); return
         if mavutil is None: raise RuntimeError("pymavlink is required; install requirements.txt")
         errors = []
@@ -61,6 +69,12 @@ class MavlinkVehicle:
             elif kind == "SYS_STATUS": self.status.battery_v = message.voltage_battery / 1000
             elif kind == "GPS_RAW_INT": self.status.satellites, self.status.hdop = message.satellites_visible, message.eph / 100
             elif kind == "EKF_STATUS_REPORT": self.status.ekf_ok = not bool(message.flags & 0b111000)
+            elif kind == "STATUSTEXT":
+                text = str(message.text).rstrip("\x00")
+                now = time.monotonic(); key = f"pixhawk:{text}"
+                if now - self._last_log_monotonic.get(key, -float("inf")) >= 1.0:
+                    self._last_log_monotonic[key] = now
+                    self.logger(f"[Pixhawk] {text}")
             elif kind == "HEARTBEAT":
                 autopilot_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
                 if message.get_srcComponent() != autopilot_component or message.autopilot == mavutil.mavlink.MAV_AUTOPILOT_INVALID:
@@ -77,7 +91,13 @@ class MavlinkVehicle:
             elif kind == "COMMAND_ACK": self._command_acks[message.command] = message.result
         return self.status
 
-    def log(self, text: str, severity: int = 6) -> None:
+    def log(self, text: str, severity: int = 6, *, throttle_s: float = 0.0, key: str | None = None) -> None:
+        """Log locally and through STATUSTEXT, optionally rate-limited by key."""
+        if throttle_s > 0:
+            now = time.monotonic(); throttle_key = key or text
+            if now - self._last_log_monotonic.get(throttle_key, -float("inf")) < throttle_s:
+                return
+            self._last_log_monotonic[throttle_key] = now
         text = text[:50]; self.logger(text)
         if self.connection is not None and not self.dry_run:
             self.connection.mav.statustext_send(severity, text.encode("ascii", "replace"))
@@ -94,12 +114,17 @@ class MavlinkVehicle:
         self.connection.mav.set_mode_send(self._target()[0], mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, mapping[mode])
 
     def request_message_intervals(self, message_ids: tuple[int, ...] | None = None, interval_us: int = 100_000) -> None:
-        """Request 10 Hz position/RC/heartbeat telemetry required by the TX15 safety guard."""
+        """Request only the 10 Hz position/RC streams used by the safety guard."""
         if self.dry_run: return
         if message_ids is None:
             message_ids = (mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS)
         for message_id in message_ids:
-            self.command_long(mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, message_id, interval_us)
+            # Stream maintenance is transport housekeeping, not operator
+            # telemetry. Send it directly so retries do not emit STATUSTEXT.
+            values = (message_id, interval_us, 0, 0, 0, 0, 0)
+            self.connection.mav.command_long_send(
+                *self._target(), mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, *values
+            )
         self._last_stream_request_monotonic = time.monotonic()
 
     def maintain_rc_telemetry(self, stale_after_s: float = 2.0, retry_interval_s: float = 1.0) -> None:
@@ -109,13 +134,24 @@ class MavlinkVehicle:
         now = time.monotonic()
         rc_stale = now - self.status.last_rc_monotonic > stale_after_s
         if rc_stale and now - self._last_stream_request_monotonic >= retry_interval_s:
-            self.log("RC telemetry stale; re-requesting stream", 4)
+            self.log("RC telemetry stale; re-requesting stream", 4, throttle_s=5.0, key="rc-stream-stale")
             self.request_message_intervals()
+
+    @staticmethod
+    def _ack_rejected(result: int | None) -> bool:
+        if result is None:
+            return False
+        return result in {
+            mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED,
+            mavutil.mavlink.MAV_RESULT_DENIED,
+            mavutil.mavlink.MAV_RESULT_UNSUPPORTED,
+            mavutil.mavlink.MAV_RESULT_FAILED,
+            getattr(mavutil.mavlink, "MAV_RESULT_CANCELLED", -1),
+        }
 
     def _wait_for_ack(self, command: int, timeout_s: float, cancel: Callable[[], bool] | None = None) -> bool:
         if self.dry_run: return True
         deadline = time.monotonic() + timeout_s
-        denied = {mavutil.mavlink.MAV_RESULT_DENIED, mavutil.mavlink.MAV_RESULT_FAILED, mavutil.mavlink.MAV_RESULT_UNSUPPORTED}
         while time.monotonic() < deadline:
             self.poll(.05)
             if cancel and cancel(): return False
@@ -135,8 +171,9 @@ class MavlinkVehicle:
             wait_until = min(deadline, time.monotonic() + .5)
             while time.monotonic() < wait_until:
                 self.poll(.05)
+                if cancel and cancel(): return False
                 if self.status.mode == mode: self.log(f"Mode confirmed {mode}"); return True
-                if self._command_acks.pop(mavutil.mavlink.MAV_CMD_DO_SET_MODE, None) in {mavutil.mavlink.MAV_RESULT_DENIED, mavutil.mavlink.MAV_RESULT_FAILED, mavutil.mavlink.MAV_RESULT_UNSUPPORTED}: return False
+                if self._ack_rejected(self._command_acks.pop(mavutil.mavlink.MAV_CMD_DO_SET_MODE, None)): return False
         self.log(f"Mode timeout {mode}", 3); return False
 
     def arm(self) -> None:
@@ -146,14 +183,17 @@ class MavlinkVehicle:
 
     def arm_confirmed(self, arm: bool = True, timeout_s: float = 6.0, cancel: Callable[[], bool] | None = None) -> bool:
         if self.dry_run: self.status.armed = arm; self.log("DRY ARM" if arm else "DRY DISARM"); return True
+        if cancel and cancel(): return False
         value = 1 if arm else 0; command = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM; self._command_acks.pop(command, None)
+        self.log("ARM command" if arm else "DISARM command")
         self.connection.mav.command_long_send(*self._target(), command, 0, value, 0, 0, 0, 0, 0, 0)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             self.poll(.05)
             if cancel and cancel(): return False
             if self.status.armed == arm: self.log("Arming confirmed" if arm else "Disarm confirmed"); return True
-            if self._command_acks.pop(command, None) in {mavutil.mavlink.MAV_RESULT_DENIED, mavutil.mavlink.MAV_RESULT_FAILED, mavutil.mavlink.MAV_RESULT_UNSUPPORTED}: return False
+            if self._ack_rejected(self._command_acks.pop(command, None)): return False
+        self.log("Arming timeout" if arm else "Disarm timeout", 3)
         return False
 
     def takeoff(self, altitude_m: float) -> None:
@@ -163,7 +203,9 @@ class MavlinkVehicle:
 
     def takeoff_confirmed(self, altitude_m: float, timeout_s: float = 3.0, cancel: Callable[[], bool] | None = None) -> bool:
         if self.dry_run: self.takeoff(altitude_m); return True
+        if cancel and cancel(): return False
         command = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF; self._command_acks.pop(command, None)
+        self.log(f"TAKEOFF command {altitude_m:.1f}m")
         self.connection.mav.command_long_send(*self._target(), command, 0, 0, 0, 0, 0, 0, 0, altitude_m)
         return self._wait_for_ack(command, timeout_s, cancel)
 
@@ -185,6 +227,16 @@ class MavlinkVehicle:
         self.log(f"COMMAND {command}")
         if not self.dry_run: self.connection.mav.command_long_send(*self._target(), command, 0, *values[:7])
 
+    def command_long_confirmed(self, command: int, *params: float, timeout_s: float = 2.0,
+                               cancel: Callable[[], bool] | None = None) -> bool:
+        """Send COMMAND_LONG and require an ACCEPTED acknowledgement."""
+        if self.dry_run:
+            self.command_long(command, *params)
+            return True
+        self._command_acks.pop(command, None)
+        self.command_long(command, *params)
+        return self._wait_for_ack(command, timeout_s, cancel)
+
     def set_parameter(self, name: str, value: float) -> None:
         self.log(f"PARAM {name}={value:g}")
         if not self.dry_run:
@@ -194,10 +246,14 @@ class MavlinkVehicle:
         self.log(f"FENCE {index+1}/{total}")
         if not self.dry_run: self.connection.mav.fence_point_send(*self._target(), index, total, lat, lon)
 
-    def rc_override(self, channel_12_pwm: int | None) -> None:
-        self.log(f"RC12 {'release' if channel_12_pwm is None else channel_12_pwm}")
+    def rc_override(self, pwm: int | None, channel: int = 12) -> None:
+        if not 1 <= channel <= 18: raise ValueError("RC override channel must be between 1 and 18")
+        self.log(f"RC{channel} {'release' if pwm is None else pwm}")
         if self.dry_run: return
-        channels = [65535] * 18; channels[11] = 0 if channel_12_pwm is None else channel_12_pwm
+        # MAVLink uses different release sentinels for extension channels:
+        # CH1-8 release with 0; CH9-18 release with UINT16_MAX-1.
+        release_value = 0 if channel <= 8 else 65534
+        channels = [65535] * 18; channels[channel - 1] = release_value if pwm is None else pwm
         self.connection.mav.rc_channels_override_send(*self._target(), *channels)
 
     def land(self) -> None: self.set_mode("LAND")

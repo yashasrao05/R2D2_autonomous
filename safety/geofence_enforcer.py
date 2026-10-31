@@ -42,7 +42,7 @@ class GeofenceEnforcer:
         valid = point_in_polygon(future,self.outer) and not any(point_in_polygon(future,p) for p in self.exclusions)
         n,e,d=nearest_interior_vector(lat,lon,self.outer)
         if not valid or d < self.margin:
-            self.vehicle.log("FENCE: velocity clamped", 4)
+            self.vehicle.log("FENCE: velocity clamped", 4, throttle_s=2.0, key="fence-clamp")
             return (max(-.2,min(.2,vx))+n, max(-.2,min(.2,vy))+e, vz)
         return vx,vy,vz
     def send_body_velocity(self, vx: float, vy: float, vz: float = 0.0) -> None:

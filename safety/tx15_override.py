@@ -50,7 +50,11 @@ class Tx15SafetyGuard:
     def heartbeat_fresh(self) -> bool: return time.monotonic() - self.vehicle.status.last_heartbeat_monotonic <= self.config.heartbeat_timeout_s
     def is_down(self) -> bool: return self.rc_fresh() and self.state == "DOWN" and self.pwm is not None and self.pwm < self.config.down_pwm
     def is_up(self) -> bool: return self.rc_fresh() and self.state == "UP" and self.pwm is not None and self.pwm > self.config.up_pwm
-    def manual_requested(self) -> bool: return not self.is_up()
+    def manual_requested(self) -> bool:
+        """Match the tested fail-safe: stale RC is manual, low PWM is immediate, mid-band is debounced."""
+        if not self.rc_fresh() or self.pwm is None:
+            return True
+        return self.state == "DOWN" or self.pwm < self.config.down_pwm
 
     def require_initial_manual(self, timeout_s: float | None = None) -> None:
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -69,10 +73,20 @@ class Tx15SafetyGuard:
             if deadline and time.monotonic() >= deadline: raise TimeoutError("TX15 SC switch did not authorize autonomy")
             time.sleep(.05)
 
-    def yield_to_pilot(self, reason: str) -> None:
+    def yield_to_pilot(self, reason: str) -> bool:
+        """Confirm ALT_HOLD, then STABILIZE if the primary fallback is rejected."""
         self.vehicle.log(f"PILOT OVERRIDE: {reason}", 2)
-        if self.vehicle.status.mode != self.config.manual_mode and not self.vehicle.set_mode_confirmed(self.config.manual_mode, 1.5):
-            self.vehicle.set_mode_confirmed(self.config.backup_mode, 1.5)
+        if self.vehicle.status.mode == self.config.manual_mode:
+            return True
+        if self.vehicle.set_mode_confirmed(self.config.manual_mode, 1.5):
+            return True
+        self.vehicle.log(f"{self.config.manual_mode} rejected; trying {self.config.backup_mode}", 2)
+        if self.vehicle.status.mode == self.config.backup_mode:
+            return True
+        confirmed = self.vehicle.set_mode_confirmed(self.config.backup_mode, 1.5)
+        if not confirmed:
+            self.vehicle.log("Manual fallback mode was not confirmed", 2)
+        return confirmed
 
     def assert_autonomy(self, expected_modes: tuple[str, ...] | None = ("GUIDED",)) -> None:
         self.poll(.01)
