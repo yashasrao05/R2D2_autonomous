@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from control.checkpoint_manager import CheckpointManager
 from control.mavlink_interface import MavlinkVehicle
-from core.waypoint_loader import load_fence, load_mission
+from core.waypoint_loader import load_mission
 from mission.profiles import build_mission
 from mission.state_machine import MarkerVault, Phase
 from perception.oakd_corridor_avoidance import BannerDetection, CorridorScene
@@ -117,7 +117,20 @@ def run_sil(repo: Path, profile: str = "full") -> dict:
     oak = SyntheticOak(vehicle)
     payload = MockPayload()
     plan = load_mission(repo / "config/mission.waypoints", repo / "config/mission_mapping.yaml")
-    fence = GeofenceEnforcer(vehicle, load_fence(repo / "config/geofence.poly"), 2.0)
+    vehicle.status.lat, vehicle.status.lon = plan.home.lat, plan.home.lon
+    # SIL validates mission logic independently of event-day FC data. Production
+    # config/geofence.poly deliberately remains invalid until the team records a
+    # whole-flight containment polygon, so build a synthetic test-only envelope.
+    latitudes = [waypoint.lat for waypoint in plan.all_waypoints]
+    longitudes = [waypoint.lon for waypoint in plan.all_waypoints]
+    pad = .0005
+    synthetic_outer = [
+        (min(latitudes) - pad, min(longitudes) - pad),
+        (max(latitudes) + pad, min(longitudes) - pad),
+        (max(latitudes) + pad, max(longitudes) + pad),
+        (min(latitudes) - pad, max(longitudes) + pad),
+    ]
+    fence = GeofenceEnforcer(vehicle, [synthetic_outer], 2.0)
 
     with tempfile.TemporaryDirectory(prefix="mission2-sil-") as directory:
         temp = Path(directory)

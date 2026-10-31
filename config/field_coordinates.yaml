@@ -3,7 +3,8 @@ source:
   workbook: R2D2 Coordinates.xlsx
   sheet: Sheet1
   range: A1:C15
-  note: Normalized role names preserve every original spreadsheet label.
+  measurement_method: phone_gps_on_field
+  note: Team-recorded on-field phone measurements; normalized role names preserve every original spreadsheet label.
 
 points:
   home_takeoff_landing:
@@ -46,6 +47,22 @@ polygons:
       - {latitude: 13.1705558, longitude: 77.5328685, source_label: Geo Fence – Top Left}
       - {latitude: 13.1707726, longitude: 77.5329279, source_label: Geo Fence – Top Right}
       - {latitude: 13.1707011, longitude: 77.5330707, source_label: Geo Fence – Bottom Right}
+
+# Operational search samples are derived from the four measured delivery-area
+# corners. Each inset corner is 15% of the way toward the polygon centroid so
+# the aircraft is not commanded onto an uncertain phone-GPS boundary. The
+# centroid is the fifth coverage sample required by mission preflight.
+derived_mission_points:
+  delivery_search:
+    source_polygon: delivery_area_boundary
+    method: 15_percent_vertex_to_centroid_inset_plus_centroid
+    provisional: true
+    points:
+      - {latitude: 13.1705013, longitude: 77.5330129, source_label: Derived inset – Bottom Left}
+      - {latitude: 13.1705665, longitude: 77.5328840, source_label: Derived inset – Top Left}
+      - {latitude: 13.1707508, longitude: 77.5329345, source_label: Derived inset – Top Right}
+      - {latitude: 13.1706900, longitude: 77.5330559, source_label: Derived inset – Bottom Right}
+      - {latitude: 13.1706271, longitude: 77.5329718, source_label: Derived polygon centroid}
 
 # Intentionally absent. The supplied "Geo Fence" polygon excludes the home,
 # QR, and transit points, so it is unsafe to use as whole-flight containment.

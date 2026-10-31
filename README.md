@@ -25,7 +25,7 @@ The validated FC upload bundle is [config/fc_upload_manifest.yaml](config/fc_upl
 python3 runner.py --mode sync-flightplan --upload-manifest config/fc_upload_manifest.yaml --transport ethernet
 ```
 
-The current checked-in field files intentionally fail that command until the missing whole-field containment, red/corridor conflict, and placeholder waypoints are corrected. After it and the competition check pass, the isolated live hover/hop commands are documented in the runbook.
+The current checked-in field files intentionally fail that command until the missing whole-field containment and red/corridor conflict are corrected. The waypoint roles now use the team-recorded on-field phone coordinates, with five provisional delivery-search samples inset from the measured delivery polygon. After the upload and competition checks pass, the isolated live hover/hop commands are documented in the runbook.
 
 To monitor the physical TX15 switch without changing flight mode, use `python3 runner.py --mode test-tx15`. For a propellers-removed fallback test, use `python3 runner.py --mode test-tx15 --tx15-live-fallback`; it never arms or takes off, but it deliberately requests `GUIDED` after SC-up and verifies `ALT_HOLD`/`STABILIZE` after SC-down.
 
@@ -33,7 +33,7 @@ To monitor the physical TX15 switch without changing flight mode, use `python3 r
 
 ## Pixhawk 6X Mini / Jetson Ethernet lifecycle test
 
-The coordinate spreadsheet is normalized in `config/field_coordinates.yaml`; each clean role name retains its original spreadsheet label. The rows called `Geo Fence` are treated as the delivery search-area boundary because they do not contain the starting box, QR target, or corridor points. No whole-flight containment polygon is invented. The lifecycle audit therefore reports this as a flight blocker until the event's actual overall containment boundary is supplied. It also reports the supplied green-corridor exit overlapping the red exclusion polygon, which must be checked against the physical field before creating a live route.
+The coordinate spreadsheet contains team-recorded on-field phone measurements and is normalized in `config/field_coordinates.yaml`; each clean role name retains its original spreadsheet label. The rows called `Geo Fence` are treated as the delivery search-area boundary because they do not contain the starting box, QR target, or corridor points. No whole-flight containment polygon is invented. The lifecycle audit therefore reports this as a flight blocker until the event's actual overall containment boundary is supplied. It also reports the supplied green-corridor exit overlapping the red exclusion polygon, which must be checked against the physical field before creating a live route.
 
 Give the Jetson Ethernet interface the static address `192.168.168.10/24`, connect the Pixhawk 6X Ethernet link, keep the aircraft disarmed, place the RC12 winch control at its actual neutral position, and run:
 

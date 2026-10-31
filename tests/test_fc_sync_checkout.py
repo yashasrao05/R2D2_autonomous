@@ -90,7 +90,7 @@ class FlightControllerSyncTests(unittest.TestCase):
         self.assertEqual(report["mission_items_verified"], 12)
         self.assertTrue(any("DRY MISSION upload/read-back 12 items" in item for item in logs))
 
-    def test_current_placeholder_bundle_is_refused_before_write(self):
+    def test_current_incomplete_field_bundle_is_refused_before_write(self):
         vehicle = MavlinkVehicle(dry_run=True, logger=lambda _message: None)
         vehicle.connect()
         with self.assertRaisesRegex(RuntimeError, "unsafe"):

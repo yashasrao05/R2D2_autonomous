@@ -17,6 +17,7 @@ from safety.pixhawk_field_sync import sync_field_to_pixhawk
 class FieldCoordinateTests(unittest.TestCase):
     def test_spreadsheet_labels_are_normalized_without_inventing_containment(self):
         layout = load_field_layout("config/field_coordinates.yaml")
+        self.assertEqual(layout.source["measurement_method"], "phone_gps_on_field")
         self.assertEqual(layout.points["home_takeoff_landing"].source_label, "Starting Box")
         self.assertEqual(layout.points["blue_corridor_entry"].source_label, "Danger Zone – Blue")
         self.assertIsNone(layout.flight_containment)
@@ -24,6 +25,16 @@ class FieldCoordinateTests(unittest.TestCase):
         self.assertFalse(audit["flight_ready"])
         self.assertIn("whole-flight containment boundary was not supplied", audit["blockers"])
         self.assertAlmostEqual(audit["distances_m"]["home_to_qr"], 1.24, delta=.05)
+
+    def test_production_waypoints_use_the_measured_field(self):
+        from core.waypoint_loader import load_mission
+
+        layout = load_field_layout("config/field_coordinates.yaml")
+        plan = load_mission("config/mission.waypoints", "config/mission_mapping.yaml")
+        self.assertEqual((plan.home.lat, plan.home.lon), layout.points["home_takeoff_landing"].pair)
+        self.assertEqual((plan.takeoff_scan_qr.lat, plan.takeoff_scan_qr.lon), layout.points["qr_scan_target"].pair)
+        self.assertEqual(len(plan.delivery_search_waypoints), 5)
+        self.assertTrue(all(13.1704 < waypoint.lat < 13.1708 for waypoint in plan.all_waypoints))
 
     def test_non_arming_dry_lifecycle_reports_static_coordinate_blocker(self):
         vehicle = SimpleNamespace(

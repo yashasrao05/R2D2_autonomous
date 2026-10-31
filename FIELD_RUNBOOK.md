@@ -8,9 +8,8 @@ The software and mock-flight tests are ready, but the checked-in field data is i
 
 - `flight_containment_boundary` is missing from `config/field_coordinates.yaml`.
 - `green_corridor_exit` is inside the supplied red no-fly polygon.
-- `config/mission.waypoints` is a placeholder route roughly 23 km from the normalized field coordinates.
-- There are only two delivery-search points; Segment 1 requires at least five and full camera coverage may require more.
-- `config/geofence.poly` does not contain the normalized inclusion plus red-exclusion polygons.
+- `config/mission.waypoints` now uses the team-recorded on-field phone coordinates for all named mission roles. Its five delivery-search samples are provisional points inset from the measured delivery polygon, not separately surveyed targets.
+- `config/geofence.poly` is intentionally non-importable because the spreadsheet does not contain a whole-flight inclusion polygon.
 
 Do not guess any of those coordinates. Obtain the event-approved whole-field boundary and resolve the conflicting corridor/red-zone measurement, then export the final Mission Planner waypoint and fence files. The check below verifies the results geometrically.
 
@@ -84,7 +83,7 @@ This is non-arming. Before any FC mutation it rejects missing containment, red-z
 4. Persistent `FENCE_ENABLE=1` read-back.
 5. Every main AUTO mission waypoint by `MISSION_ITEM_INT` upload, count download, and item-by-item comparison.
 
-The checked-in bundle currently refuses to write because the field boundary/corridor conflict and placeholder route listed at the top of this runbook are unresolved. That is an intentional safety result, not a syntax or MAVLink failure. Replace only the event-verified data; rerun until the command prints `"write_verified": true` and exits `0`.
+The checked-in bundle currently refuses to write because the whole-field boundary and corridor/red-zone conflict listed at the top of this runbook are unresolved. That is an intentional safety result, not a syntax or MAVLink failure. Replace only the event-verified data; rerun until the command prints `"write_verified": true` and exits `0`.
 
 ## Prove arming, hover, and one safe task before the full mission
 
