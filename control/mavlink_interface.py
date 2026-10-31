@@ -46,13 +46,19 @@ class MavlinkVehicle:
         self.message_counts: dict[str, int] = {}
         self.last_message_monotonic: dict[str, float] = {}
 
-    def _apply_heartbeat(self, message) -> bool:
+    @staticmethod
+    def _is_autopilot_heartbeat(message) -> bool:
         if message is None:
             return False
         if mavutil is not None:
             autopilot_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
             if message.get_srcComponent() != autopilot_component or message.autopilot == mavutil.mavlink.MAV_AUTOPILOT_INVALID:
                 return False
+        return True
+
+    def _apply_heartbeat(self, message) -> bool:
+        if not self._is_autopilot_heartbeat(message):
+            return False
         modes = self.connection.mode_mapping() or {}
         inverse_modes = {value: name for name, value in modes.items()}
         self.status.armed = bool(message.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
@@ -60,6 +66,17 @@ class MavlinkVehicle:
         self.status.mode = inverse_modes.get(message.custom_mode, str(message.custom_mode))
         self.status.last_heartbeat_monotonic = time.monotonic()
         return True
+
+    def _wait_for_autopilot_heartbeat(self, timeout: float):
+        """Ignore companion/GCS heartbeats until Pixhawk's own heartbeat arrives."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            heartbeat = self.connection.recv_match(
+                type="HEARTBEAT", blocking=True, timeout=min(.5, max(.01, deadline - time.monotonic()))
+            )
+            if self._is_autopilot_heartbeat(heartbeat):
+                return heartbeat
+        raise TimeoutError(f"no autopilot heartbeat received within {timeout:.1f}s")
 
     def connect(self, timeout: float = 12.0) -> None:
         if self.dry_run:
@@ -84,9 +101,13 @@ class MavlinkVehicle:
         for transport, device, kwargs in candidates:
             try:
                 self.connection = mavutil.mavlink_connection(device, autoreconnect=True, **kwargs)
-                heartbeat = self.connection.wait_heartbeat(timeout=timeout)
+                heartbeat = self._wait_for_autopilot_heartbeat(timeout)
+                # mavutil's wait_heartbeat() would bind target IDs to the
+                # first UDP speaker. Set them only after selecting Pixhawk.
+                self.connection.target_system = heartbeat.get_srcSystem()
+                self.connection.target_component = heartbeat.get_srcComponent()
                 if not self._apply_heartbeat(heartbeat):
-                    raise ConnectionError("first heartbeat was not from the autopilot component")
+                    raise ConnectionError("autopilot heartbeat was invalid")
                 self.connected_transport = transport
                 self.log(f"MAVLink heartbeat via {device}"); return
             except Exception as exc:

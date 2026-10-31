@@ -4,6 +4,7 @@ import time
 import unittest
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from control.mavlink_interface import MavlinkVehicle
 from control.servo7_actuator import Servo7Actuator
@@ -101,6 +102,49 @@ class Tx15SafetyTests(unittest.TestCase):
 
 
 class MavlinkVehicleTests(unittest.TestCase):
+    def test_connect_ignores_non_autopilot_udp_heartbeat(self):
+        mavlink = SimpleNamespace(
+            MAV_COMP_ID_AUTOPILOT1=1,
+            MAV_AUTOPILOT_INVALID=8,
+            MAV_MODE_FLAG_SAFETY_ARMED=128,
+        )
+        non_autopilot = SimpleNamespace(
+            get_srcSystem=lambda: 255, get_srcComponent=lambda: 190,
+            autopilot=8, base_mode=0, custom_mode=0,
+        )
+        pixhawk = SimpleNamespace(
+            get_srcSystem=lambda: 1, get_srcComponent=lambda: 1,
+            autopilot=3, base_mode=0, custom_mode=4,
+        )
+
+        class Connection:
+            target_system = 0
+            target_component = 0
+
+            def __init__(self):
+                self.messages = [non_autopilot, pixhawk]
+                self.mav = SimpleNamespace(statustext_send=lambda *_args: None)
+
+            def recv_match(self, **_kwargs):
+                return self.messages.pop(0) if self.messages else None
+
+            def mode_mapping(self):
+                return {"GUIDED": 4}
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        fake_mavutil = SimpleNamespace(
+            mavlink=mavlink,
+            mavlink_connection=lambda *_args, **_kwargs: connection,
+        )
+        with patch("control.mavlink_interface.mavutil", fake_mavutil):
+            vehicle = MavlinkVehicle(transport="ethernet", logger=lambda _text: None)
+            vehicle.connect(timeout=1.0)
+        self.assertEqual((connection.target_system, connection.target_component), (1, 1))
+        self.assertEqual(vehicle.status.mode, "GUIDED")
+
     def test_dry_run_status_timestamps_are_in_the_correct_fields(self):
         vehicle = MavlinkVehicle(dry_run=True, logger=lambda _text: None)
         vehicle.connect()
