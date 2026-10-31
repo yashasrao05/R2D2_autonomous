@@ -1,0 +1,7 @@
+numpy>=1.24
+opencv-contrib-python>=4.8
+PyYAML>=6.0
+pymavlink>=2.4.41
+Flask>=3.0
+depthai>=2.25
+scipy>=1.10

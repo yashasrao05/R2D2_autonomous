@@ -1,0 +1,16 @@
+[Unit]
+Description=AeroTHON SkyScan autonomous mission companion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/aerothon
+ExecStart=/usr/bin/python3 /opt/aerothon/runner.py --mode mission --wp-file /opt/aerothon/config/mission.waypoints
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

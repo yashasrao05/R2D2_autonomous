@@ -1,0 +1,24 @@
+roles:
+  home_index: 0
+  takeoff_scan_qr_index: 1
+  green_corridor_start_index: 2
+  green_corridor_end_index: 3
+  blue_corridor_start_from_end: 2
+  blue_corridor_end_from_end: 1
+  land_from_end: 0
+fence_margin_m: 2.0
+oakd_tilt_deg: 45.0
+payload:
+  method: rc_override # rc_override or set_servo
+  lower_seconds: 8.0
+  retract_seconds: 8.0
+  settle_seconds: 1.0
+tx15:
+  rc_channel: 8
+  sc_up_pwm: 1700
+  sc_down_pwm: 1300
+  debounce_count: 3
+  rc_timeout_s: 2.0
+  heartbeat_timeout_s: 3.0
+  manual_fallback_mode: ALT_HOLD
+  backup_fallback_mode: STABILIZE

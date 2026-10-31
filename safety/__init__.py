@@ -1,0 +1,1 @@
+"""Independent companion safety limits."""

@@ -1,0 +1,4 @@
+# Operator-facing Jetson address used in stream URLs and status messages.
+# MAVLink remains bound to 0.0.0.0:14550 so the Pixhawk Ethernet link is accepted on every interface.
+jetson_stream_host: 10.233.44.10
+stream_port: 5000
