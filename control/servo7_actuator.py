@@ -23,7 +23,7 @@ class Servo7Actuator:
         self.autopilot_timed = bool(autopilot_timed)
         self._verified_servo_trim: int | None = None
     def verify_configuration(self) -> None:
-        """Fail closed when Pixhawk output limits would clip the winch command."""
+        """Require the Pixhawk to deliver the requested PWM without alteration."""
         if getattr(self.vehicle, "dry_run", False) or not hasattr(self.vehicle, "read_parameter"):
             return
         prefix = f"SERVO{self.servo_number}"
@@ -50,6 +50,21 @@ class Servo7Actuator:
                 f"{prefix}_MIN={values['MIN']:.0f} clips requested retract PWM {self.retract_pwm}"
             )
         self._verified_servo_trim = int(round(values["TRIM"]))
+
+    def configure_exact_lower_limit(self) -> None:
+        """Non-arming setup: persist SERVOx_MAX so lower_pwm is not FC-clipped."""
+        status = getattr(self.vehicle, "status", None)
+        if status is not None and bool(getattr(status, "armed", False)):
+            raise RuntimeError("refusing to change winch output limits while vehicle is armed")
+        if not hasattr(self.vehicle, "set_parameter_confirmed"):
+            raise RuntimeError("vehicle does not support confirmed parameter writes")
+        name = f"SERVO{self.servo_number}_MAX"
+        if not self.vehicle.set_parameter_confirmed(name, self.lower_pwm):
+            raise RuntimeError(f"Pixhawk did not confirm {name}={self.lower_pwm}")
+        actual = self.vehicle.read_parameter(name) if hasattr(self.vehicle, "read_parameter") else None
+        if actual is not None and int(round(actual)) != self.lower_pwm:
+            raise RuntimeError(f"{name} read-back {actual:.0f}, expected {self.lower_pwm}")
+        self.vehicle.log(f"{name} verified at {self.lower_pwm}; PWM will not be clipped")
     def _set(self, pwm: int | None, guard=None) -> None:
         if self.method == "rc_override": self.vehicle.rc_override(pwm,self.rc_channel)
         elif pwm is not None:

@@ -75,11 +75,14 @@ class CompetitionSupervisor:
             runtime=self.runtime,
             control_token=self.control_token,
             profile_selector=self.select_profile,
+            stream_fps=float(network.get("stream_fps", 4)),
+            jpeg_quality=int(network.get("stream_jpeg_quality", 65)),
+            camera_width=int(network.get("stream_camera_width", 640)),
         )
 
     def select_profile(self, profile: str) -> tuple[bool, str]:
-        if profile not in {"segment1", "segment2"}:
-            return False, "Only the two official profiles can be selected from the field console."
+        if profile not in {"full", "segment1", "segment2"}:
+            return False, "Select full, segment1, or segment2."
         with self._selection_lock:
             allowed, reason = self.runtime.can_select_profile()
             if not allowed:
@@ -128,11 +131,11 @@ class CompetitionSupervisor:
         self.runtime.transition(state, detail, mission_phase=phase)
 
     def _preview_loop(self) -> None:
-        from perception.oakd_corridor_avoidance import annotate_scene
         try:
             while not self._preview_stop.is_set():
-                self.hud.update(self.down.read(), annotate_scene(self.oak.read("green")))
-                self._preview_stop.wait(.35)
+                scene = self.oak.read("green")
+                self.hud.update(self.down.read(), scene.rgb)
+                self._preview_stop.wait(.2)
         except Exception as exc:
             blocker = f"camera_preview: {type(exc).__name__}: {exc}"
             snapshot = self.runtime.snapshot()
@@ -146,13 +149,13 @@ class CompetitionSupervisor:
     def _start_camera_preview(self) -> bool:
         self.runtime.transition("CAMERA_CHECK", "Opening and validating both mission cameras")
         from perception.cameras import DownwardCamera
-        from perception.oakd_corridor_avoidance import OakDCamera, annotate_scene
+        from perception.oakd_corridor_avoidance import OakDCamera
         self.down = DownwardCamera()
         self.oak = OakDCamera(float(self.config.get("oakd_tilt_deg", 45)))
         try:
             down_frame = self.down.read()
             oak_scene = self.oak.read("green")
-            self.hud.update(down_frame, annotate_scene(oak_scene))
+            self.hud.update(down_frame, oak_scene.rgb)
         except Exception as exc:
             blocker = f"camera_hardware: {type(exc).__name__}: {exc}"
             snapshot = self.runtime.snapshot()

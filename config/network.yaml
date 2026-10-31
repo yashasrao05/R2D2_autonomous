@@ -2,3 +2,8 @@
 # MAVLink remains bound to 0.0.0.0:14550 so the Pixhawk Ethernet link is accepted on every interface.
 jetson_stream_host: 10.233.44.10
 stream_port: 5000
+# Basic operator preview only. Mission perception continues at full camera
+# resolution and is not downscaled by these web-stream settings.
+stream_fps: 4
+stream_jpeg_quality: 65
+stream_camera_width: 640

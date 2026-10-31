@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
+
 from core.mission_runtime import MissionRuntime
 from streaming.wifi_hud_streamer import WifiHudStreamer
 
@@ -42,6 +45,15 @@ class RuntimeTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_basic_stream_downscales_without_touching_source_frames(self):
+        dashboard = WifiHudStreamer(camera_width=640, jpeg_quality=65)
+        left = np.full((720, 1280, 3), 20, np.uint8)
+        right = np.full((720, 1280, 3), 40, np.uint8)
+        dashboard.update(left, right)
+        decoded = cv2.imdecode(np.frombuffer(dashboard._frame(), np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(decoded.shape[:2], (360, 1280))
+        self.assertEqual(left.shape, (720, 1280, 3))
+
     def test_profile_selection_is_token_protected(self):
         calls = []
         dashboard = WifiHudStreamer(
@@ -56,6 +68,19 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(calls, ["segment1"])
+
+    def test_full_mission_is_selectable_from_dashboard(self):
+        calls = []
+        dashboard = WifiHudStreamer(
+            runtime=None, control_token="field-secret",
+            profile_selector=lambda profile: (calls.append(profile) is None, f"{profile} locked"),
+        )
+        response = dashboard.app.test_client().post(
+            "/api/profile", json={"profile": "full"},
+            headers={"X-R2D2-Token": "field-secret"},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(calls, ["full"])
 
     def test_dashboard_has_no_remote_arm_or_start_endpoint(self):
         dashboard = WifiHudStreamer(control_token="field-secret")

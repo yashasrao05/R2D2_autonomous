@@ -13,7 +13,7 @@ from safety.tx15_override import PilotOverride, Tx15Config, Tx15SafetyGuard
 
 def parser():
     p=argparse.ArgumentParser(description="SAEINDIA AeroTHON SkyScan companion")
-    p.add_argument("--mode",required=True,choices=["service","competition-check","sync-flightplan","flight-check","calibrate","sync-pixhawk","test-lifecycle","test-waypoints","test-aruco","test-corridor","test-redzone","test-servo7","test-geofence","test-tx15","mission"])
+    p.add_argument("--mode",required=True,choices=["service","competition-check","configure-servo7","sync-flightplan","flight-check","calibrate","sync-pixhawk","test-lifecycle","test-waypoints","test-aruco","test-corridor","test-redzone","test-servo7","test-geofence","test-tx15","mission"])
     p.add_argument("--wp-file",default="config/mission.waypoints"); p.add_argument("--fence-file",default="config/geofence.poly"); p.add_argument("--mapping",default="config/mission_mapping.yaml")
     p.add_argument("--coordinates", default="config/field_coordinates.yaml", help="Normalized field-coordinate YAML used by the lifecycle audit.")
     p.add_argument("--mission-profile", choices=["full","segment1","segment2"], default=None,
@@ -139,6 +139,14 @@ def main():
             if vehicle.status.mode not in {guard.config.manual_mode, guard.config.backup_mode}:
                 raise RuntimeError(f"fallback did not confirm; current mode is {vehicle.status.mode}")
             print(f"TX15 fallback verified: Pixhawk is in {vehicle.status.mode}. No arm/takeoff command was sent.")
+        return
+    if args.mode=="configure-servo7":
+        print("SERVO7 configuration is NON-ARMING. It writes only SERVO7_MAX and verifies read-back.")
+        vehicle.poll(.3)
+        actuator = Servo7Actuator(vehicle, **payload_cfg)
+        actuator.configure_exact_lower_limit()
+        actuator.verify_configuration()
+        print(f"SERVO7_MAX verified at {actuator.lower_pwm}; payload drop remains {actuator.lower_seconds:.1f}s.")
         return
     if args.mode=="test-servo7":
         print("SERVO7 test is NON-ARMING. It captures RC12 neutral, then directly drives Servo 7.")

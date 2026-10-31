@@ -113,6 +113,7 @@ step "Install the headless boot service"
 bash deploy/install_boot_service.sh
 
 step "Run live non-arming Ethernet/FC readiness"
+.venv/bin/python3 -B runner.py --mode configure-servo7 --transport ethernet
 .venv/bin/python3 -B runner.py --mode competition-check --transport ethernet --lifecycle-seconds 5
 
 step "Run finite TX15 monitor (no mode change, arm, or takeoff)"
@@ -147,4 +148,4 @@ fi
 step "ONE-SHOT HEADLESS SETUP PASSED"
 echo "Ethernet=${ethernet_interface}; service enabled=$(systemctl is-enabled "${service_name}" 2>/dev/null || true)"
 echo "Logs: sudo journalctl -fu ${service_name}"
-echo "Profile selection from this PuTTY session: bash deploy/select_mission_profile.sh segment1|segment2"
+echo "Profile selection from this PuTTY session: bash deploy/select_mission_profile.sh full|segment1|segment2"

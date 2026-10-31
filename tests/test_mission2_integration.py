@@ -43,6 +43,21 @@ class BannerTests(unittest.TestCase):
 
 
 class PersistenceAndServoTests(unittest.TestCase):
+    def test_non_arming_setup_removes_fc_1900_limit_with_readback(self):
+        class Vehicle:
+            dry_run = False
+            status = SimpleNamespace(armed=False)
+            def __init__(self): self.maximum = 1900; self.writes = []
+            def set_parameter_confirmed(self, name, value):
+                self.writes.append((name, value)); self.maximum = value; return True
+            def read_parameter(self, _name): return self.maximum
+            def log(self, *_args, **_kwargs): pass
+        vehicle = Vehicle()
+        actuator = Servo7Actuator(vehicle, lower_pwm=2000)
+        actuator.configure_exact_lower_limit()
+        self.assertEqual(vehicle.writes, [("SERVO7_MAX", 2000)])
+        self.assertEqual(vehicle.maximum, 2000)
+
     def test_reference_cannot_be_overwritten_by_decoy(self):
         with tempfile.TemporaryDirectory() as directory:
             vault = MarkerVault(Path(directory) / "vault.json")
@@ -80,6 +95,26 @@ class PersistenceAndServoTests(unittest.TestCase):
         actuator.test_drop(duration_s=65.0)
         self.assertEqual(vehicle.commands[0], (184, 7, 2000, 1, 130.0))
         self.assertEqual(vehicle.commands[-1], (183, 7, 1507))
+
+    def test_mission_payload_drop_is_exactly_2000_for_65_seconds(self):
+        class Vehicle:
+            dry_run = False
+            status = SimpleNamespace(armed=True)
+            def __init__(self): self.commands = []
+            def read_parameter(self, name):
+                return {"SERVO7_FUNCTION": 62, "SERVO7_MIN": 1100, "SERVO7_MAX": 2000,
+                        "SERVO7_TRIM": 1507}[name]
+            def capture_rc_channel_pwm(self, _channel, **_kwargs): return 1507
+            def command_long_confirmed(self, command, *params, **_kwargs):
+                self.commands.append((command, *params)); return True
+            def log(self, *_args, **_kwargs): pass
+        vehicle = Vehicle()
+        actuator = Servo7Actuator(vehicle, autopilot_timed=True, lower_pwm=2000, lower_seconds=65.0)
+        waits = []
+        actuator._wait = lambda duration, _guard=None: waits.append(duration)
+        actuator.release_cycle()
+        self.assertEqual(vehicle.commands[0], (184, 7, 2000, 1, 130.0))
+        self.assertEqual(waits[0], 65.0)
 
 
 if __name__ == "__main__":

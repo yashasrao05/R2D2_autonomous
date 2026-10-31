@@ -3,9 +3,9 @@ set -euo pipefail
 
 profile="${1:-}"
 case "${profile}" in
-  segment1|segment2) ;;
+  full|segment1|segment2) ;;
   *)
-    echo "Usage: bash deploy/select_mission_profile.sh {segment1|segment2}" >&2
+    echo "Usage: bash deploy/select_mission_profile.sh {full|segment1|segment2}" >&2
     exit 2
     ;;
 esac

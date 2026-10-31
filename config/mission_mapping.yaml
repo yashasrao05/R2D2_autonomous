@@ -22,8 +22,8 @@ flight_controller:
   field_source: mission_planner
   write_flightplan_from_jetson: false
 mission_profiles:
-  # Parent profile preserves the complete original mission. Select either
-  # official child run with --mission-profile segment1/segment2.
+  # Parent profile preserves the complete original mission and is selectable
+  # alongside either official child run.
   default: full
   full: {}
   segment1:

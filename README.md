@@ -102,6 +102,8 @@ python3 scripts/mock_mission2_sil.py --profile all
 Select the official run from the already-running boot service (this cannot arm it):
 
 ```bash
+bash deploy/select_mission_profile.sh full
+# or
 bash deploy/select_mission_profile.sh segment1
 # or
 bash deploy/select_mission_profile.sh segment2
@@ -113,7 +115,7 @@ After every lifecycle blocker relevant to the winch is corrected, remove propell
 python3 runner.py --mode test-servo7 --transport ethernet --servo7-pwm 2000 --servo7-seconds 65
 ```
 
-The test captures the actual RC12 neutral, schedules a Pixhawk-side 65-second pulse on output 7, waits for the complete interval, and explicitly returns to the captured neutral. The flight-controller timer independently returns to `SERVO7_TRIM` if the Jetson or Ethernet link dies. For that protection to be valid, set `SERVO7_MAX` to at least 2000 and make `SERVO7_TRIM` match the lifecycle test's live RC12 neutral within 5 microseconds. In the supplied export, `RC12_DZ=20` means a 20-microsecond dead zone, not a 20-percent neutral offset; the exported trims are `RC12_TRIM=1507` and `SERVO7_TRIM=1500`, while `SERVO7_MAX=1900`. Do not run the live winch until these are reconciled in Mission Planner and re-read successfully by the lifecycle audit.
+The test captures the actual RC12 neutral, schedules a Pixhawk-side 65-second pulse on output 7, waits for the complete interval, and explicitly returns to the captured neutral. The flight-controller timer independently returns to `SERVO7_TRIM` if the Jetson or Ethernet link dies. The one-shot setup corrects the old `SERVO7_MAX=1900` value by writing and reading back `SERVO7_MAX=2000` while disarmed, so the FC cannot clip the requested 2000 command. `SERVO7_TRIM` must still match the lifecycle test's live RC12 neutral within 5 microseconds. `RC12_DZ=20` means a 20-microsecond dead zone, not a 20-percent neutral offset.
 
 ## Flight-blocking configuration checks
 

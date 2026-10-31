@@ -23,7 +23,7 @@ bash deploy/one_shot_headless_setup.sh \
   --with-winch-test
 ```
 
-The script refuses to readdress the interface carrying PuTTY. It disables the obsolete `aerothon-mission.service` if present so two controllers cannot start at boot, updates the venv, runs dependency checks, 46 unit tests, all three mock mission profiles, live Ethernet/FC readiness, a finite non-arming TX15 monitor, and both cameras without a desktop. It installs, enables, and starts the boot service only after all earlier gates pass.
+The script refuses to readdress the interface carrying PuTTY. It disables the obsolete `aerothon-mission.service` if present so two controllers cannot start at boot, updates the venv, runs dependency checks, 51 unit tests, all three mock mission profiles, writes and reads back `SERVO7_MAX=2000` while disarmed, runs live Ethernet/FC readiness, a finite non-arming TX15 monitor, and both cameras without a desktop. It installs, enables, and starts the boot service only after all earlier gates pass.
 
 ## One-time Jetson installation
 
@@ -149,7 +149,7 @@ The web console has no arm or start endpoint. It only selects and locks a profil
 1. Complete the field, software, hardware, camera, TX15, and winch gates above.
 2. Place the aircraft in the configured Starting Box, with SC DOWN and the area clear.
 3. Boot/start the service and wait for `IDLE_SELECT_PROFILE` with every check green.
-4. Select exactly one official profile in the laptop console:
+4. Select exactly one mission profile in the laptop console: Full Mission, Segment 1, or Segment 2.
    - Segment 1: initial marker scan, high corridor bypass, red-safe search/drop, high return, land at home.
    - Segment 2: green corridor, red-safe bypass, blue obstacle corridor, return/land; no marker scan or payload.
 5. Wait for verified fence read-back, live cameras, calibration, and `READY_WAITING_TX15_UP`.
@@ -160,8 +160,8 @@ The web console has no arm or start endpoint. It only selects and locks a profil
 The Jetson-local selector is available if the laptop UI is unavailable:
 
 ```bash
-bash deploy/select_mission_profile.sh segment1
-# or segment2
+bash deploy/select_mission_profile.sh full
+# or segment1 / segment2
 ```
 
 It calls the same authenticated API and therefore obeys the same disarmed, readiness, SC-DOWN, and one-run lock conditions.

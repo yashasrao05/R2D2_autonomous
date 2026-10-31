@@ -30,7 +30,7 @@ button,input{background:#14252e;color:var(--text);border:1px solid var(--line);b
 <div class="card"><div class="label">Mode / armed</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Battery</div><div class="value" id="battery">-</div></div>
 <div class="card"><div class="label">GPS</div><div class="value" id="gps">-</div></div><div class="card"><div class="label">EKF</div><div class="value" id="ekf">-</div></div></div>
 <div class="action" id="action">Waiting for status...</div></div><div class="panel" style="margin-top:14px"><div class="label">Event log</div><div id="logs" class="logs"></div></div></div>
-<div><div class="panel"><div class="label">Official run selection</div><p>Select only while disarmed with SC DOWN. The selection locks for the run; SC UP remains the only autonomy trigger.</p><div class="controls"><input id="token" type="password" placeholder="Field control token"><button onclick="pick('segment1')">Segment 1</button><button onclick="pick('segment2')">Segment 2</button></div><p id="pickResult" class="small"></p></div>
+<div><div class="panel"><div class="label">Mission profile selection</div><p>Select only while disarmed with SC DOWN. The selection locks for the run; SC UP remains the only autonomy trigger.</p><div class="controls"><input id="token" type="password" placeholder="Field control token"><button onclick="pick('full')">Full Mission</button><button onclick="pick('segment1')">Segment 1</button><button onclick="pick('segment2')">Segment 2</button></div><p id="pickResult" class="small"></p></div>
 <div class="panel" style="margin-top:14px"><div class="label">Readiness</div><div id="ready" class="value">CHECKING</div><ul id="blockers"></ul><div class="small" id="logPath"></div></div>
 <div class="panel" style="margin-top:14px"><div class="label">Verified checks</div><ul id="checks"></ul></div></div></div></div>
 <script>
@@ -45,8 +45,12 @@ refresh();setInterval(refresh,1000);
 
 class WifiHudStreamer:
     def __init__(self, port: int = 5000, runtime=None, control_token: str | None = None,
-                 profile_selector: Callable[[str], tuple[bool, str]] | None = None):
+                 profile_selector: Callable[[str], tuple[bool, str]] | None = None,
+                 stream_fps: float = 4.0, jpeg_quality: int = 65, camera_width: int = 640):
         self.port = port
+        self.stream_fps = max(1.0, min(float(stream_fps), 10.0))
+        self.jpeg_quality = max(40, min(int(jpeg_quality), 90))
+        self.camera_width = max(320, min(int(camera_width), 1280))
         self.runtime = runtime
         self.control_token = control_token or ""
         self.profile_selector = profile_selector
@@ -78,9 +82,15 @@ class WifiHudStreamer:
         if right is None:
             right = np.zeros_like(left)
             cv2.putText(right, "Awaiting OAK-D", (180, 200), cv2.FONT_HERSHEY_SIMPLEX, .8, (255, 255, 255), 2)
+        def basic_size(frame):
+            if frame.shape[1] <= self.camera_width:
+                return frame
+            height = max(1, int(round(frame.shape[0] * self.camera_width / frame.shape[1])))
+            return cv2.resize(frame, (self.camera_width, height), interpolation=cv2.INTER_AREA)
+        left, right = basic_size(left), basic_size(right)
         if left.shape[0] != right.shape[0]:
             right = cv2.resize(right, (int(right.shape[1] * left.shape[0] / right.shape[0]), left.shape[0]))
-        ok, encoded = cv2.imencode(".jpg", np.hstack([left, right]), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        ok, encoded = cv2.imencode(".jpg", np.hstack([left, right]), [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         if not ok:
             raise RuntimeError("could not encode HUD frame")
         return encoded.tobytes()
@@ -110,8 +120,8 @@ class WifiHudStreamer:
         if self.profile_selector is None:
             return jsonify({"error": "read_only", "message": "Profile selection is not enabled."}), 503
         profile = str((request.get_json(silent=True) or {}).get("profile", ""))
-        if profile not in {"segment1", "segment2"}:
-            return jsonify({"error": "invalid_profile", "message": "Select segment1 or segment2."}), 400
+        if profile not in {"full", "segment1", "segment2"}:
+            return jsonify({"error": "invalid_profile", "message": "Select full, segment1, or segment2."}), 400
         accepted, message = self.profile_selector(profile)
         return jsonify({"accepted": accepted, "message": message}), 202 if accepted else 409
 
@@ -120,7 +130,7 @@ class WifiHudStreamer:
             while True:
                 started = time.monotonic()
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + self._frame() + b"\r\n"
-                time.sleep(max(0.0, .1 - (time.monotonic() - started)))
+                time.sleep(max(0.0, 1.0 / self.stream_fps - (time.monotonic() - started)))
         return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
     def start(self) -> None:
