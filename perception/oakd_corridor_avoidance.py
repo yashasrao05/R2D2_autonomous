@@ -17,6 +17,15 @@ class CorridorScene:
     depth: np.ndarray
     sectors: tuple[float, float, float]
     banner_offset: float | None
+    detections: list["SpatialDetection"]
+
+
+@dataclass(frozen=True)
+class SpatialDetection:
+    label: str
+    confidence: float
+    bbox: tuple[float, float, float, float]
+    xyz_m: tuple[float, float, float]
 
 
 class OakDCamera:
@@ -27,6 +36,9 @@ class OakDCamera:
         self.device = None
         self.rgb_q = None
         self.depth_q = None
+        self.detection_q = None
+        self.labels: list[str] = []
+        self._detections: list[SpatialDetection] = []
 
     def open(self) -> None:
         if dai is None:
@@ -48,9 +60,20 @@ class OakDCamera:
         mono_left.requestFullResolutionOutput().link(stereo.left)
         mono_right.requestFullResolutionOutput().link(stereo.right)
 
+        # Match the working oak_pi_stream.py deployment pipeline: run YOLOv6
+        # on CAM_A and attach stereo depth for X/Y/Z object coordinates.
+        model = dai.NNModelDescription("yolov6-nano")
+        spatial_nn = self.pipeline.create(dai.node.SpatialDetectionNetwork).build(rgb_camera, stereo, model)
+        spatial_nn.setConfidenceThreshold(0.45)
+        spatial_nn.setBoundingBoxScaleFactor(0.5)
+        spatial_nn.setDepthLowerThreshold(100)
+        spatial_nn.setDepthUpperThreshold(10_000)
+        self.labels = list(spatial_nn.getClasses() or [])
+
         # requestFullResolutionOutput() and createOutputQueue() are v3 APIs.
-        self.rgb_q = rgb_camera.requestFullResolutionOutput().createOutputQueue(maxSize=2, blocking=False)
+        self.rgb_q = spatial_nn.passthrough.createOutputQueue(maxSize=2, blocking=False)
         self.depth_q = stereo.depth.createOutputQueue(maxSize=2, blocking=False)
+        self.detection_q = spatial_nn.out.createOutputQueue(maxSize=2, blocking=False)
         self.pipeline.start()
 
     def read(self, color: str = "green", floor_height_m: float = 0.25) -> CorridorScene:
@@ -61,6 +84,20 @@ class OakDCamera:
         depth_packet = self.depth_q.get()
         rgb = rgb_packet.getCvFrame()
         depth_mm = depth_packet.getFrame().astype(np.float32)
+
+        detection_packet = self.detection_q.tryGet()
+        if detection_packet is not None:
+            height, width = rgb.shape[:2]
+            self._detections = []
+            for item in detection_packet.detections:
+                label = self.labels[item.label] if 0 <= item.label < len(self.labels) else str(item.label)
+                coords = item.spatialCoordinates
+                self._detections.append(SpatialDetection(
+                    label=label,
+                    confidence=float(item.confidence),
+                    bbox=(max(0.0, item.xmin), max(0.0, item.ymin), min(1.0, item.xmax), min(1.0, item.ymax)),
+                    xyz_m=(coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0),
+                ))
 
         # StereoDepth.depth is millimetres. Resize to RGB dimensions so the
         # corridor regions and visual overlay use one common frame geometry.
@@ -81,7 +118,7 @@ class OakDCamera:
         mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
         moments = cv2.moments(mask)
         banner_offset = None if moments["m00"] < 500 else moments["m10"] / moments["m00"] - width / 2
-        return CorridorScene(rgb, depth, sectors, banner_offset)
+        return CorridorScene(rgb, depth, sectors, banner_offset, list(self._detections))
 
     def calibrate_ground_plane(self, count: int = 20) -> dict:
         frames = [self.read().depth for _ in range(count)]
@@ -125,3 +162,24 @@ class OakDCamera:
         self.device = None
         self.rgb_q = None
         self.depth_q = None
+        self.detection_q = None
+        self._detections = []
+
+
+def annotate_scene(scene: CorridorScene) -> np.ndarray:
+    """Return OAK RGB with distance sectors, banner alignment, and YOLO boxes."""
+    image = scene.rgb.copy()
+    height, width = image.shape[:2]
+    for x in (width // 3, 2 * width // 3):
+        cv2.line(image, (x, 0), (x, height), (255, 255, 255), 1)
+    for index, distance in enumerate(scene.sectors):
+        cv2.putText(image, f"{'LCR'[index]} {distance:.2f}m", (12 + index * width // 3, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+    banner = "none" if scene.banner_offset is None else f"{scene.banner_offset:+.0f}px"
+    cv2.putText(image, f"Banner {banner}", (12, height - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+    for item in scene.detections:
+        x1, y1, x2, y2 = item.bbox
+        start, end = (int(x1 * width), int(y1 * height)), (int(x2 * width), int(y2 * height))
+        cv2.rectangle(image, start, end, (0, 255, 0), 2)
+        text = f"{item.label} {item.confidence * 100:.0f}% Z:{item.xyz_m[2]:.2f}m"
+        cv2.putText(image, text, (start[0] + 4, max(18, start[1] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    return image

@@ -10,6 +10,7 @@ from control.servo7_actuator import Servo7Actuator
 from perception.aruco_fiducial_engine import FiducialEngine
 from perception.cameras import pixel_to_ground_offset
 from perception.red_zone_detector import detect_red_zone
+from perception.oakd_corridor_avoidance import annotate_scene
 
 class Phase(str,Enum): CALIBRATE="CALIBRATE"; SCAN_REFERENCE="SCAN_REFERENCE"; GREEN="GREEN"; SEARCH="SEARCH"; RELEASE="RELEASE"; BLUE="BLUE"; LAND="LAND"; COMPLETE="COMPLETE"
 
@@ -76,7 +77,7 @@ class MissionStateMachine:
             if obstacles and center<2.2: vx=.4; vy=.6 if right>left else -.6
             if min(left,right)<.8: vy=.7 if right>left else -.7
             self.fence.send_body_velocity(vx,vy,0); self.watchdog.tick()
-            if self.hud: self.hud.update(None,scene.rgb)
+            if self.hud: self.hud.update(None, annotate_scene(scene))
             if self.vehicle.status.relative_alt_m>2:
                 # Clamp inside-corridor altitude through the same GPS fence gate as every other position command.
                 current=SimpleNamespace(lat=self.vehicle.status.lat,lon=self.vehicle.status.lon,alt=2.0,index=-1)
