@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, time
+import math, statistics, time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -136,6 +136,28 @@ class MavlinkVehicle:
         if rc_stale and now - self._last_stream_request_monotonic >= retry_interval_s:
             self.log("RC telemetry stale; re-requesting stream", 4, throttle_s=5.0, key="rc-stream-stale")
             self.request_message_intervals()
+
+    def capture_rc_channel_pwm(self, channel: int, timeout_s: float = 3.0, samples: int = 5,
+                               cancel: Callable[[], bool] | None = None) -> int:
+        """Capture a stable, current RC input PWM before commanding an actuator."""
+        if not 1 <= channel <= 18: raise ValueError("RC channel must be between 1 and 18")
+        if samples < 1: raise ValueError("samples must be positive")
+        if self.dry_run:
+            return int((self.status.rc_channels or {}).get(channel, 1500))
+        self.request_message_intervals()
+        deadline = time.monotonic() + timeout_s; observed = []; last_sequence = -1
+        while time.monotonic() < deadline:
+            self.poll(.1)
+            if cancel and cancel(): raise RuntimeError("RC neutral capture cancelled")
+            if self.status.rc_sequence == last_sequence:
+                continue
+            last_sequence = self.status.rc_sequence
+            pwm = (self.status.rc_channels or {}).get(channel)
+            if pwm is not None and 800 <= pwm <= 2200:
+                observed.append(pwm)
+                if len(observed) >= samples:
+                    return int(round(statistics.median(observed)))
+        raise TimeoutError(f"no stable RC{channel} input received for neutral capture")
 
     @staticmethod
     def _ack_rejected(result: int | None) -> bool:

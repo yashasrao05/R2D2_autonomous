@@ -20,7 +20,7 @@ def parser():
     p.add_argument("--tx15-timeout", type=float, default=0, help="TX15 test timeout in seconds; 0 waits indefinitely.")
     p.add_argument("--servo7-pwm", type=int, default=2000, help="Servo 7 bench-test PWM (default: 2000).")
     p.add_argument("--servo7-seconds", type=float, default=65.0, help="Servo 7 bench-test pulse duration (default: 65 seconds).")
-    p.add_argument("--servo7-neutral-pwm", type=int, default=1500, help="Neutral PWM for direct set_servo mode; RC override mode releases back to the transmitter.")
+    p.add_argument("--servo7-neutral-pwm", type=int, default=None, help="Optional fixed neutral PWM; default captures the current RC12 input.")
     return p
 def main():
     args=parser().parse_args(); cfg=yaml.safe_load(Path(args.mapping).read_text()) or {}; payload_cfg=cfg.get("payload",{})
@@ -65,7 +65,7 @@ def main():
             print(f"TX15 fallback verified: Pixhawk is in {vehicle.status.mode}. No arm/takeoff command was sent.")
         return
     if args.mode=="test-servo7":
-        print("SERVO7 test is NON-ARMING. It overrides RC12, then releases back to transmitter neutral.")
+        print("SERVO7 test is NON-ARMING. It captures RC12 neutral, then directly drives Servo 7.")
         print("Remove propellers and secure the winch before continuing.")
         Servo7Actuator(vehicle,**payload_cfg).test_drop(args.servo7_pwm,args.servo7_seconds,args.servo7_neutral_pwm); return
     if args.mode in {"test-aruco","test-redzone","test-corridor","calibrate","mission"}:

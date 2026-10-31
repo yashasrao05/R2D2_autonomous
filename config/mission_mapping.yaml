@@ -9,10 +9,11 @@ roles:
 fence_margin_m: 2.0
 oakd_tilt_deg: 45.0
 payload:
-  method: rc_override
-  # SERVO7_FUNCTION must map Servo 7 to RC input 12 (RCIN12 / function 62).
+  method: set_servo
+  # Capture the transmitter's offset RC12 neutral before direct Servo 7 control.
   servo_number: 7
   rc_channel: 12
+  neutral_from_rc_channel: 12
   lower_pwm: 2000
   neutral_pwm: 1500
   retract_pwm: 1100

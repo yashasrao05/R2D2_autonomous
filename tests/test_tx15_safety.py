@@ -236,6 +236,7 @@ class ServoVehicle:
         self.commands = []
         self.logs = []
         self.command_results = []
+        self.captured_neutral_pwm = 1600
 
     def command_long_confirmed(self, command, *params, **_kwargs):
         self.commands.append((command, *params))
@@ -244,16 +245,20 @@ class ServoVehicle:
     def rc_override(self, pwm, channel=12):
         self.commands.append(("rc", channel, pwm))
 
+    def capture_rc_channel_pwm(self, channel, **_kwargs):
+        self.commands.append(("capture", channel))
+        return self.captured_neutral_pwm
+
     def log(self, text, _severity=6, **_kwargs):
         self.logs.append(text)
 
 
 class Servo7Tests(unittest.TestCase):
-    def test_drop_uses_output_7_pwm_2000_then_neutral(self):
+    def test_drop_uses_output_7_pwm_2000_then_captured_rc12_neutral(self):
         vehicle = ServoVehicle()
         actuator = Servo7Actuator(vehicle,method="set_servo")
         actuator.test_drop(duration_s=.001)
-        self.assertEqual(vehicle.commands, [(183, 7, 2000), (183, 7, 1500)])
+        self.assertEqual(vehicle.commands, [("capture", 12), (183, 7, 2000), (183, 7, 1600)])
 
     def test_drop_restores_neutral_when_wait_is_interrupted(self):
         vehicle = ServoVehicle()
@@ -261,7 +266,7 @@ class Servo7Tests(unittest.TestCase):
         actuator._wait = lambda _duration: (_ for _ in ()).throw(KeyboardInterrupt())
         with self.assertRaises(KeyboardInterrupt):
             actuator.test_drop(duration_s=.001)
-        self.assertEqual(vehicle.commands[-1], (183, 7, 1500))
+        self.assertEqual(vehicle.commands[-1], (183, 7, 1600))
 
     def test_release_attempts_neutral_if_drop_ack_fails(self):
         vehicle = ServoVehicle()
@@ -269,7 +274,7 @@ class Servo7Tests(unittest.TestCase):
         actuator = Servo7Actuator(vehicle, method="set_servo", lower_seconds=.001, retract_seconds=.001, settle_seconds=.001)
         with self.assertRaises(RuntimeError):
             actuator.release_cycle()
-        self.assertEqual(vehicle.commands, [(183, 7, 2000), (183, 7, 1500)])
+        self.assertEqual(vehicle.commands, [("capture", 12), (183, 7, 2000), (183, 7, 1600)])
 
     def test_65_second_drop_duration_is_allowed(self):
         vehicle = ServoVehicle()
@@ -278,7 +283,7 @@ class Servo7Tests(unittest.TestCase):
         actuator._wait = waits.append
         actuator.test_drop()
         self.assertEqual(waits, [65.0])
-        self.assertEqual(vehicle.commands, [("rc", 12, 2000), ("rc", 12, None)])
+        self.assertEqual(vehicle.commands, [("capture", 12), (183, 7, 2000), (183, 7, 1600)])
 
     def test_rc12_offset_is_honoured_by_releasing_override(self):
         vehicle = ServoVehicle()
