@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import cv2
+import numpy as np
 import yaml
 
 from perception.cameras import DownwardCamera
