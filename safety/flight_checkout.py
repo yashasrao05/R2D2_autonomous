@@ -118,8 +118,13 @@ def run_flight_checkout(vehicle, guard, manifest_path: str, level: str = "hover"
     vehicle.verify_flight_failsafes()
     if not vehicle.dry_run:
         arming_check = vehicle.read_parameter("ARMING_CHECK")
-        if arming_check is None or int(round(arming_check)) == 0:
-            raise RuntimeError(f"ARMING_CHECK must be enabled; read {arming_check}")
+        if arming_check is not None:
+            if int(round(arming_check)) == 0:
+                raise RuntimeError("ARMING_CHECK must be enabled")
+        else:
+            arming_skip = vehicle.read_parameter("ARMING_SKIPCHK")
+            if arming_skip is None or int(round(arming_skip)) != 0:
+                raise RuntimeError(f"ARMING_SKIPCHK must be 0; read {arming_skip}")
 
     vehicle.request_message_intervals()
     if vehicle.dry_run:

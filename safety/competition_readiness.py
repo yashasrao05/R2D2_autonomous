@@ -145,11 +145,17 @@ def _audit_exported_fence(coordinates_path: str | Path, fence_path: str | Path) 
 def _audit_live_fence_parameters(vehicle, maximum_mission_altitude_m: float = 10.0) -> dict[str, Any]:
     if vehicle.dry_run:
         return _check("pixhawk_fence_parameters", None, "dry-run cannot read Pixhawk fence parameters")
-    names = ("FENCE_ENABLE", "FENCE_TYPE", "FENCE_ACTION", "FENCE_ALT_MAX", "ARMING_CHECK")
+    names = ("FENCE_ENABLE", "FENCE_TYPE", "FENCE_ACTION", "FENCE_ALT_MAX")
     values = {name: vehicle.read_parameter(name) for name in names}
+    # ArduPilot 4.7 replaced ARMING_CHECK (checks to run) with
+    # ARMING_SKIPCHK (checks to skip). Support both without weakening checks.
+    values["ARMING_CHECK"] = vehicle.read_parameter("ARMING_CHECK")
+    if values["ARMING_CHECK"] is None:
+        values["ARMING_SKIPCHK"] = vehicle.read_parameter("ARMING_SKIPCHK")
     problems = []
-    if any(value is None for value in values.values()):
-        problems.append("one or more parameters could not be read")
+    fence_values = [values[name] for name in names]
+    if any(value is None for value in fence_values):
+        problems.append("one or more fence parameters could not be read")
     else:
         if int(round(values["FENCE_ENABLE"])) != 1:
             problems.append("FENCE_ENABLE must be 1")
@@ -159,8 +165,16 @@ def _audit_live_fence_parameters(vehicle, maximum_mission_altitude_m: float = 10
             problems.append("FENCE_ACTION must not be Report Only")
         if float(values["FENCE_ALT_MAX"]) < maximum_mission_altitude_m + 2.0:
             problems.append(f"FENCE_ALT_MAX must be at least {maximum_mission_altitude_m + 2.0:.0f}m")
-        if int(round(values["ARMING_CHECK"])) == 0:
+    legacy = values.get("ARMING_CHECK")
+    modern = values.get("ARMING_SKIPCHK")
+    if legacy is not None:
+        if int(round(legacy)) == 0:
             problems.append("ARMING_CHECK is disabled")
+    elif modern is not None:
+        if int(round(modern)) != 0:
+            problems.append(f"ARMING_SKIPCHK={modern:.0f}; set 0 so no arming checks are skipped")
+    else:
+        problems.append("neither ARMING_CHECK nor ARMING_SKIPCHK could be read")
     return _check(
         "pixhawk_fence_parameters", not problems,
         f"values={values}" + ("" if not problems else "; " + "; ".join(problems)),

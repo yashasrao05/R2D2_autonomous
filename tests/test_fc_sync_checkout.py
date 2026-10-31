@@ -10,6 +10,7 @@ import yaml
 from control.mavlink_interface import MavlinkVehicle
 from safety.fc_flightplan_sync import sync_flightplan_to_fc
 from safety.flight_checkout import run_flight_checkout
+from safety.competition_readiness import _audit_live_fence_parameters
 from safety.tx15_override import Tx15SafetyGuard
 
 
@@ -80,6 +81,16 @@ def _valid_bundle(directory: str) -> Path:
 
 
 class FlightControllerSyncTests(unittest.TestCase):
+    def test_ardupilot_47_arming_skip_parameter_passes_when_zero(self):
+        parameters = {
+            "FENCE_ENABLE": 1, "FENCE_TYPE": 5, "FENCE_ACTION": 1,
+            "FENCE_ALT_MAX": 20, "ARMING_CHECK": None, "ARMING_SKIPCHK": 0,
+        }
+        vehicle = SimpleNamespace(dry_run=False, read_parameter=parameters.get)
+        result = _audit_live_fence_parameters(vehicle, 10)
+        self.assertEqual(result["status"], "PASS")
+        self.assertIn("ARMING_SKIPCHK", result["detail"])
+
     def test_mission_planner_fence_items_decode_without_red_exclusion(self):
         vertices = [(13.0, 77.0), (13.001, 77.0), (13.001, 77.001), (13.0, 77.001)]
         items = [SimpleNamespace(command=5000, param1=0, x=0, y=0)]
