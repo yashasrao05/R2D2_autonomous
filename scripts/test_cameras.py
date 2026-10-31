@@ -30,6 +30,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--stream-host", default=None, help="Address printed for operators to open; the server still binds all interfaces.")
     parser.add_argument("--color", choices=("green", "blue"), default="green", help="Banner colour used for OAK-D overlay analysis.")
+    parser.add_argument("--csi-sensor-id", type=int, default=0, help="Jetson CSI sensor id; CAM0 is normally 0.")
+    parser.add_argument("--downward-backend", choices=("auto", "subprocess", "opencv", "v4l2"), default="auto")
+    parser.add_argument("--v4l2-device", type=int, default=0, help="V4L2 fallback device number.")
     parser.add_argument("--display", action="store_true", help="Show a local OpenCV preview window (requires a graphical desktop).")
     parser.add_argument("--duration", type=float, default=0, help="Stop after this many seconds; 0 runs until Ctrl+C.")
     return parser.parse_args()
@@ -61,7 +64,7 @@ def main() -> None:
     network = yaml.safe_load((ROOT / "config" / "network.yaml").read_text()) or {}
     port = args.port if args.port is not None else int(network.get("stream_port", 5000))
     stream_host = args.stream_host or str(network.get("jetson_stream_host", "10.233.44.10"))
-    downward = DownwardCamera() if args.camera in ("downward", "both") else None
+    downward = DownwardCamera(sensor_id=args.csi_sensor_id, backend=args.downward_backend, v4l2_device=args.v4l2_device) if args.camera in ("downward", "both") else None
     oakd = OakDCamera() if args.camera in ("oakd", "both") else None
     hud = WifiHudStreamer(port=port)
     hud.start()
@@ -73,6 +76,8 @@ def main() -> None:
     try:
         while not args.duration or time.monotonic() - started < args.duration:
             left = annotate_downward(downward.read()) if downward else None
+            if downward and frames == 0:
+                print(f"Downward camera backend: {downward.backend_name}")
             right = annotate_oakd(oakd.read(args.color)) if oakd else None
             hud.update(left, right)
             frames += 1
